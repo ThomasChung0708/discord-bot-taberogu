@@ -1,0 +1,17 @@
+[Unit]
+Description=Discord Tabelog Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/discord-tabelog-bot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/discord-tabelog-bot/.venv/bin/python /opt/discord-tabelog-bot/bot.py
+Restart=always
+RestartSec=10
+User=discordbot
+Group=discordbot
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,699 @@
+from __future__ import annotations
+
+import csv
+import io
+import os
+import re
+from pathlib import Path
+
+import discord
+from discord import app_commands
+from dotenv import load_dotenv
+from googleapiclient.errors import HttpError
+from openai import OpenAI
+
+from db import Restaurant, RestaurantDB
+from extractor import MessageSnippet, extract_restaurant
+from sheets_sync import sync_restaurants_to_sheet
+
+
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env")
+
+DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+DB_PATH_VALUE = os.getenv("DB_PATH", "restaurants.sqlite3")
+DB_PATH = Path(DB_PATH_VALUE)
+if not DB_PATH.is_absolute():
+    DB_PATH = BASE_DIR / DB_PATH
+GOOGLE_SHEETS_ID = os.getenv("GOOGLE_SHEETS_ID", "").strip()
+GOOGLE_SERVICE_ACCOUNT_FILE_VALUE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "").strip()
+GOOGLE_SERVICE_ACCOUNT_FILE = Path(GOOGLE_SERVICE_ACCOUNT_FILE_VALUE) if GOOGLE_SERVICE_ACCOUNT_FILE_VALUE else None
+if GOOGLE_SERVICE_ACCOUNT_FILE and not GOOGLE_SERVICE_ACCOUNT_FILE.is_absolute():
+    GOOGLE_SERVICE_ACCOUNT_FILE = BASE_DIR / GOOGLE_SERVICE_ACCOUNT_FILE
+GOOGLE_SHEETS_WORKSHEET = os.getenv("GOOGLE_SHEETS_WORKSHEET", "restaurants").strip() or "restaurants"
+GOOGLE_MY_MAPS_URL = os.getenv("GOOGLE_MY_MAPS_URL", "").strip()
+
+db = RestaurantDB(str(DB_PATH))
+db.cleanup_comment_placeholders()
+openai_client = OpenAI()
+MESSAGE_ID_RE = re.compile(r"(\d{17,25})")
+
+intents = discord.Intents.default()
+intents.message_content = True
+
+
+class RestaurantSelect(discord.ui.Select):
+    def __init__(self, restaurants: list[Restaurant]) -> None:
+        options = [
+            discord.SelectOption(
+                label=r.name[:100],
+                description=f"{r.category} {r.area or ''}".strip()[:100],
+                value=str(r.id),
+            )
+            for r in restaurants[:25]
+        ]
+        super().__init__(
+            placeholder="選擇餐廳",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        restaurant = db.get(int(self.values[0]))
+        if not restaurant:
+            await interaction.response.send_message("找不到這間餐廳，可能資料被刪除了。", ephemeral=True)
+            return
+        await interaction.response.send_message(embed=restaurant_embed(restaurant), ephemeral=True)
+
+
+class RestaurantSelectView(discord.ui.View):
+    def __init__(self, restaurants: list[Restaurant]) -> None:
+        super().__init__(timeout=180)
+        self.add_item(RestaurantSelect(restaurants))
+
+
+class SearchResultsView(discord.ui.View):
+    def __init__(self, keyword: str, restaurants: list[Restaurant]) -> None:
+        super().__init__(timeout=180)
+        self.keyword = keyword
+        self.restaurants = restaurants
+        self.index = 0
+        self.update_buttons()
+
+    def current_embed(self) -> discord.Embed:
+        embed = restaurant_embed(self.restaurants[self.index])
+        embed.set_footer(text=f"{self.keyword} 搜尋結果 {self.index + 1} / {len(self.restaurants)}")
+        return embed
+
+    def update_buttons(self) -> None:
+        self.previous_page.disabled = self.index <= 0
+        self.next_page.disabled = self.index >= len(self.restaurants) - 1
+
+    @discord.ui.button(label="上一頁", style=discord.ButtonStyle.secondary)
+    async def previous_page(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        self.index = max(0, self.index - 1)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.current_embed(), view=self)
+
+    @discord.ui.button(label="下一頁", style=discord.ButtonStyle.primary)
+    async def next_page(
+        self,
+        interaction: discord.Interaction,
+        button: discord.ui.Button,
+    ) -> None:
+        self.index = min(len(self.restaurants) - 1, self.index + 1)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.current_embed(), view=self)
+
+
+class AreaSelect(discord.ui.Select):
+    def __init__(self, keyword: str, restaurants: list[Restaurant]) -> None:
+        self.keyword = keyword
+        self.restaurants = restaurants
+        areas = sorted({(restaurant.area or "未分類地區").strip() for restaurant in restaurants})
+        options = [
+            discord.SelectOption(
+                label=area[:100],
+                description=f"{sum(1 for restaurant in restaurants if (restaurant.area or '未分類地區').strip() == area)} 間",
+                value=area,
+            )
+            for area in areas[:25]
+        ]
+        super().__init__(
+            placeholder="選擇地區",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        area = self.values[0]
+        restaurants = [
+            restaurant
+            for restaurant in self.restaurants
+            if (restaurant.area or "未分類地區").strip() == area
+        ]
+        view = SearchResultsView(f"{self.keyword} / {area}", restaurants)
+        await interaction.response.edit_message(
+            content=f"找到 {len(restaurants)} 筆「{self.keyword}」在「{area}」的餐廳：",
+            embed=view.current_embed(),
+            view=view,
+        )
+
+
+class AreaSelectView(discord.ui.View):
+    def __init__(self, keyword: str, restaurants: list[Restaurant]) -> None:
+        super().__init__(timeout=180)
+        self.add_item(AreaSelect(keyword, restaurants))
+
+
+class CommentRestaurantSelect(discord.ui.Select):
+    def __init__(self, restaurants: list[Restaurant], comment: str, created_by: str) -> None:
+        self.comment = comment
+        self.created_by = created_by
+        options = [
+            discord.SelectOption(
+                label=r.name[:100],
+                description=f"ID {r.id} / {r.category} {r.area or ''}".strip()[:100],
+                value=str(r.id),
+            )
+            for r in restaurants[:25]
+        ]
+        super().__init__(
+            placeholder="選擇要追加評論的餐廳",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        restaurant = db.append_comment(
+            restaurant_id=int(self.values[0]),
+            comment=self.comment,
+            created_by=self.created_by,
+        )
+        if not restaurant:
+            await interaction.response.send_message("找不到這間餐廳，可能資料被刪除了。", ephemeral=True)
+            return
+        await interaction.response.edit_message(content="已追加評論。", view=None)
+        await interaction.followup.send(
+            "已把這則訊息追加成餐廳評論。",
+            embed=restaurant_embed(restaurant),
+            ephemeral=False,
+        )
+
+
+class CommentRestaurantSelectView(discord.ui.View):
+    def __init__(self, restaurants: list[Restaurant], comment: str, created_by: str) -> None:
+        super().__init__(timeout=180)
+        self.add_item(CommentRestaurantSelect(restaurants, comment, created_by))
+
+
+class RestaurantBot(discord.Client):
+    def __init__(self) -> None:
+        super().__init__(intents=intents)
+        self.tree = app_commands.CommandTree(self)
+
+    async def setup_hook(self) -> None:
+        await self.tree.sync()
+
+
+client = RestaurantBot()
+
+
+@client.event
+async def on_ready() -> None:
+    print(f"Logged in as {client.user}")
+
+
+@client.event
+async def on_message(message: discord.Message) -> None:
+    if message.author.bot or not client.user:
+        return
+    if client.user not in message.mentions:
+        return
+
+    keyword = re.sub(rf"<@!?{client.user.id}>", "", message.content).strip()
+    if not keyword:
+        await message.reply("請在提到我後面加上關鍵字，例如：@食べログBOT 拉麵", mention_author=False)
+        return
+
+    if keyword in {"更新地圖", "同步地圖", "更新Google地圖", "更新 Google 地圖"}:
+        await sync_google_sheet_from_message(message)
+        return
+    if keyword in {"地圖", "共享地圖", "餐廳地圖", "美食地圖"}:
+        await send_map_url(message)
+        return
+
+    await send_search_results(message, keyword)
+
+
+@client.tree.context_menu(name="保存餐廳資訊")
+async def save_restaurant_from_message(
+    interaction: discord.Interaction,
+    message: discord.Message,
+) -> None:
+    await interaction.response.defer(thinking=True, ephemeral=True)
+
+    snippets = await snippets_for_target_message(message)
+    await save_extracted_restaurant(
+        interaction=interaction,
+        snippets=snippets,
+        source_message_id=message.id,
+    )
+
+
+@client.tree.context_menu(name="保存為餐廳評論")
+async def save_comment_from_message(
+    interaction: discord.Interaction,
+    message: discord.Message,
+) -> None:
+    comment = format_comment_messages([message])
+    if not comment:
+        await interaction.response.send_message(
+            "這則訊息沒有可保存的文字或附件。",
+            ephemeral=True,
+        )
+        return
+
+    restaurants = db.all()
+    if not restaurants:
+        await interaction.response.send_message(
+            "目前還沒有餐廳資料，請先保存餐廳資訊。",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.send_message(
+        "要把這則評論追加到哪間餐廳？",
+        view=CommentRestaurantSelectView(restaurants, comment, interaction.user.display_name),
+        ephemeral=True,
+    )
+
+
+@client.tree.command(name="save_restaurant", description="請改用訊息右鍵選單保存指定餐廳資訊")
+async def save_restaurant(interaction: discord.Interaction) -> None:
+    await interaction.response.send_message(
+        "現在請對要保存的那則訊息按右鍵或長按，選「應用程式」→「保存餐廳資訊」。"
+        "這樣我只會讀取你指定的那則訊息，不會再往上抓最近幾則。",
+        ephemeral=True,
+    )
+
+
+async def save_extracted_restaurant(
+    *,
+    interaction: discord.Interaction,
+    snippets: list[MessageSnippet],
+    source_message_id: int | None,
+) -> None:
+    if not snippets:
+        await interaction.followup.send(
+            "這則訊息沒有可讀取的文字或附件，我先不存。",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        result = extract_restaurant(client=openai_client, model=OPENAI_MODEL, messages=snippets)
+    except TimeoutError:
+        await interaction.followup.send(
+            "處理逾時了。食べログ或 AI 回應太慢，請稍後再試一次。",
+            ephemeral=True,
+        )
+        return
+    except Exception as exc:
+        print(f"save_restaurant failed: {exc}")
+        await interaction.followup.send(
+            "剛剛處理失敗了。請確認 OpenAI API key、網路連線，或稍後再試一次。",
+            ephemeral=True,
+        )
+        return
+
+    if not result.name:
+        await interaction.followup.send(
+            f"這段我先不存：{result.reason or '找不到餐廳名稱或食べログ資訊。'}",
+            ephemeral=True,
+        )
+        return
+
+    restaurant_id = db.add_restaurant(
+        name=result.name,
+        category=result.category,
+        area=result.area,
+        tabelog_url=result.tabelog_url,
+        google_maps_url=result.google_maps_url,
+        comments=result.comments,
+        keywords=result.keywords + [result.category],
+        source_channel_id=interaction.channel_id or 0,
+        source_message_id=source_message_id,
+        created_by=interaction.user.display_name,
+    )
+
+    restaurant = db.get(restaurant_id)
+    await interaction.followup.send(
+        f"已儲存這間餐廳。餐廳 ID：{restaurant_id}",
+        embed=restaurant_embed(restaurant) if restaurant else None,
+        ephemeral=False,
+    )
+
+
+async def snippets_for_target_message(message: discord.Message) -> list[MessageSnippet]:
+    messages: list[discord.Message] = []
+    referenced = await fetch_referenced_message(message)
+    if referenced and not referenced.author.bot:
+        messages.append(referenced)
+    if not message.author.bot:
+        messages.append(message)
+    return [message_to_snippet(msg) for msg in messages]
+
+
+async def fetch_referenced_message(message: discord.Message) -> discord.Message | None:
+    reference = message.reference
+    if not reference or not reference.message_id:
+        return None
+    if isinstance(reference.resolved, discord.Message):
+        return reference.resolved
+    channel = message.channel
+    if hasattr(channel, "fetch_message"):
+        try:
+            return await channel.fetch_message(reference.message_id)
+        except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+            return None
+    return None
+
+
+def message_to_snippet(message: discord.Message) -> MessageSnippet:
+    return MessageSnippet(
+        author=message.author.display_name,
+        content=message.content,
+        attachment_urls=[attachment.url for attachment in message.attachments],
+    )
+
+
+@client.tree.command(name="find_restaurant", description="用關鍵字查詢已儲存餐廳")
+@app_commands.describe(keyword="例如：拉麵、咖啡、澀谷、家系")
+async def find_restaurant(interaction: discord.Interaction, keyword: str) -> None:
+    restaurants = db.search(keyword)
+    if not restaurants:
+        await interaction.response.send_message(f"目前沒有找到「{keyword}」。", ephemeral=True)
+        return
+
+    areas = unique_areas(restaurants)
+    if len(areas) > 1:
+        await interaction.response.send_message(
+            f"找到 {len(restaurants)} 筆「{keyword}」相關餐廳，請先選擇地區：",
+            view=AreaSelectView(keyword, restaurants),
+            ephemeral=True,
+        )
+        return
+
+    view = SearchResultsView(keyword, restaurants)
+    await interaction.response.send_message(
+        f"找到 {len(restaurants)} 筆「{keyword}」相關餐廳：",
+        embed=view.current_embed(),
+        view=view,
+        ephemeral=True,
+    )
+
+
+async def send_search_results(
+    target: discord.Message,
+    keyword: str,
+) -> None:
+    restaurants = db.search(keyword)
+    if not restaurants:
+        await target.reply(f"目前沒有找到「{keyword}」。", mention_author=False)
+        return
+
+    areas = unique_areas(restaurants)
+    if len(areas) > 1:
+        await target.reply(
+            f"找到 {len(restaurants)} 筆「{keyword}」相關餐廳，請先選擇地區：",
+            view=AreaSelectView(keyword, restaurants),
+            mention_author=False,
+        )
+        return
+
+    view = SearchResultsView(keyword, restaurants)
+    await target.reply(
+        f"找到 {len(restaurants)} 筆「{keyword}」相關餐廳：",
+        embed=view.current_embed(),
+        view=view,
+        mention_author=False,
+    )
+
+
+@client.tree.command(name="list_restaurants", description="列出目前已儲存的餐廳與 ID")
+async def list_restaurants(interaction: discord.Interaction) -> None:
+    restaurants = db.all()
+    if not restaurants:
+        await interaction.response.send_message(
+            "目前資料庫裡沒有餐廳。請先對餐廳訊息使用「保存餐廳資訊」。",
+            ephemeral=True,
+        )
+        return
+
+    lines = [
+        f"ID {r.id}: {r.name}（{r.category} {r.area or ''}）".strip()
+        for r in restaurants[:25]
+    ]
+    await interaction.response.send_message(
+        "目前已儲存的餐廳：\n" + "\n".join(lines),
+        ephemeral=True,
+    )
+
+
+@client.tree.command(name="add_comment", description="把指定訊息區間追加成某間餐廳的評論")
+@app_commands.describe(
+    restaurant="餐廳 ID 或關鍵字。若關鍵字找到多筆，請改用餐廳 ID",
+    start_message="開始訊息的 ID 或訊息連結",
+    end_message="結束訊息的 ID 或訊息連結",
+)
+async def add_comment(
+    interaction: discord.Interaction,
+    restaurant: str,
+    start_message: str,
+    end_message: str,
+) -> None:
+    await interaction.response.defer(thinking=True, ephemeral=True)
+
+    target = resolve_restaurant(restaurant)
+    if isinstance(target, str):
+        await interaction.followup.send(target, ephemeral=True)
+        return
+
+    if not interaction.channel or not hasattr(interaction.channel, "fetch_message"):
+        await interaction.followup.send("這個頻道不能讀取指定訊息。", ephemeral=True)
+        return
+
+    start_id = parse_message_id(start_message)
+    end_id = parse_message_id(end_message)
+    if not start_id or not end_id:
+        await interaction.followup.send(
+            "請貼開始和結束訊息的 ID 或訊息連結。",
+            ephemeral=True,
+        )
+        return
+
+    try:
+        start = await interaction.channel.fetch_message(start_id)
+        end = await interaction.channel.fetch_message(end_id)
+    except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+        await interaction.followup.send(
+            "讀不到其中一則訊息。請確認訊息在同一個頻道，且 bot 有讀取訊息歷史權限。",
+            ephemeral=True,
+        )
+        return
+
+    messages = await messages_between(interaction.channel, start, end)
+    comment = format_comment_messages(messages)
+    if not comment:
+        await interaction.followup.send("這個區間沒有可保存的文字或附件。", ephemeral=True)
+        return
+
+    updated = db.append_comment(
+        restaurant_id=target.id,
+        comment=comment,
+        created_by=interaction.user.display_name,
+    )
+    await interaction.followup.send(
+        "已追加評論到這間餐廳。",
+        embed=restaurant_embed(updated) if updated else None,
+        ephemeral=False,
+    )
+
+
+@client.tree.command(name="export_map_csv", description="匯出餐廳 CSV，可匯入 Google My Maps")
+async def export_map_csv(interaction: discord.Interaction) -> None:
+    restaurants = db.all()
+    if not restaurants:
+        await interaction.response.send_message("目前還沒有餐廳可以匯出。", ephemeral=True)
+        return
+
+    text_file = io.StringIO()
+    writer = csv.writer(text_file)
+    writer.writerow(
+        [
+            "name",
+            "category",
+            "area",
+            "google_maps_url",
+            "tabelog_url",
+            "comments",
+            "keywords",
+        ]
+    )
+    for restaurant in restaurants:
+        writer.writerow(
+            [
+                restaurant.name,
+                restaurant.category,
+                restaurant.area or "",
+                restaurant.google_maps_url or "",
+                restaurant.tabelog_url or "",
+                restaurant.comments,
+                ", ".join(restaurant.keywords),
+            ]
+        )
+
+    csv_bytes = text_file.getvalue().encode("utf-8-sig")
+    file = discord.File(io.BytesIO(csv_bytes), filename="restaurants_for_google_maps.csv")
+    await interaction.response.send_message(
+        "已匯出 CSV。可以匯入 Google My Maps，或放到 Google Sheets 當共享清單。",
+        file=file,
+        ephemeral=True,
+    )
+
+
+@client.tree.command(name="sync_google_sheet", description="把目前餐廳資料同步到 Google Sheet")
+async def sync_google_sheet(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    await sync_google_sheet_to_discord(interaction)
+
+
+async def sync_google_sheet_from_message(message: discord.Message) -> None:
+    status_message = await message.reply("正在同步 Google Sheet...", mention_author=False)
+    result = sync_google_sheet_data()
+    await status_message.edit(content=result)
+
+
+async def send_map_url(message: discord.Message) -> None:
+    if not GOOGLE_MY_MAPS_URL:
+        await message.reply(
+            "還沒有設定 My Maps 網址。請先在 .env 加上 GOOGLE_MY_MAPS_URL。",
+            mention_author=False,
+        )
+        return
+    await message.reply(
+        f"餐廳地圖在這裡：\n{GOOGLE_MY_MAPS_URL}",
+        mention_author=False,
+    )
+
+
+async def sync_google_sheet_to_discord(interaction: discord.Interaction) -> None:
+    result = sync_google_sheet_data()
+    await interaction.followup.send(result, ephemeral=False)
+
+
+def sync_google_sheet_data() -> str:
+    if not GOOGLE_SHEETS_ID:
+        return "尚未設定 GOOGLE_SHEETS_ID。請先在 .env 填入 Google Sheet ID。"
+    if not GOOGLE_SERVICE_ACCOUNT_FILE or not GOOGLE_SERVICE_ACCOUNT_FILE.exists():
+        return "找不到 Google service account JSON。請確認 .env 的 GOOGLE_SERVICE_ACCOUNT_FILE。"
+
+    restaurants = db.all()
+    if not restaurants:
+        return "目前沒有餐廳可以同步。"
+
+    try:
+        count = sync_restaurants_to_sheet(
+            restaurants=restaurants,
+            spreadsheet_id=GOOGLE_SHEETS_ID,
+            credentials_path=GOOGLE_SERVICE_ACCOUNT_FILE,
+            worksheet_name=GOOGLE_SHEETS_WORKSHEET,
+        )
+    except HttpError as exc:
+        status = getattr(exc, "status_code", None) or getattr(getattr(exc, "resp", None), "status", None)
+        print(f"sync_google_sheet failed: {exc}")
+        if status == 404:
+            return (
+                "同步 Google Sheet 失敗：找不到這張 Sheet，或 service account 沒有存取權。"
+                "請確認 Sheet ID 正確，並把 service account 加到 Sheet 共用名單且設為編輯者。"
+            )
+        if status == 403:
+            return (
+                "同步 Google Sheet 失敗：權限不足或 API 未啟用。"
+                "請確認 Google Sheets API 已啟用，且 service account 是 Sheet 編輯者。"
+            )
+        return f"同步 Google Sheet 失敗：Google API 回傳 HTTP {status or '錯誤'}。"
+    except Exception as exc:
+        print(f"sync_google_sheet failed: {exc}")
+        return "同步 Google Sheet 失敗。請確認 Sheet ID、service account 權限與 JSON 檔。"
+
+    return f"已同步 {count} 筆餐廳到 Google Sheet。My Maps 讀取這張表後會看到最新資料。"
+
+
+def restaurant_embed(restaurant: Restaurant) -> discord.Embed:
+    embed = discord.Embed(
+        title=restaurant.name,
+        description=restaurant.comments,
+        color=discord.Color.green(),
+    )
+    embed.add_field(name="ID", value=str(restaurant.id), inline=True)
+    embed.add_field(name="分類", value=restaurant.category, inline=True)
+    if restaurant.area:
+        embed.add_field(name="地區", value=restaurant.area, inline=True)
+    if restaurant.tabelog_url:
+        embed.add_field(name="食べログ", value=restaurant.tabelog_url, inline=False)
+    if restaurant.google_maps_url:
+        embed.add_field(name="Google Maps", value=restaurant.google_maps_url, inline=False)
+    if restaurant.keywords:
+        embed.add_field(name="關鍵字", value=", ".join(restaurant.keywords), inline=False)
+    return embed
+
+
+def unique_areas(restaurants: list[Restaurant]) -> list[str]:
+    return sorted({(restaurant.area or "未分類地區").strip() for restaurant in restaurants})
+
+
+def resolve_restaurant(value: str) -> Restaurant | str:
+    text = value.strip()
+    if text.isdigit():
+        restaurant = db.get(int(text))
+        return restaurant or f"找不到 ID {text} 的餐廳。"
+
+    matches = db.search(text)
+    if not matches:
+        return f"找不到「{text}」相關餐廳。"
+    if len(matches) == 1:
+        return matches[0]
+
+    choices = "\n".join(f"ID {r.id}: {r.name}（{r.category} {r.area or ''}）" for r in matches[:10])
+    return f"「{text}」找到多筆，請用餐廳 ID 再試一次：\n{choices}"
+
+
+def parse_message_id(value: str) -> int | None:
+    matches = MESSAGE_ID_RE.findall(value)
+    return int(matches[-1]) if matches else None
+
+
+async def messages_between(
+    channel: discord.abc.Messageable,
+    first: discord.Message,
+    second: discord.Message,
+) -> list[discord.Message]:
+    older, newer = sorted([first, second], key=lambda msg: msg.created_at)
+    messages = [older]
+    async for msg in channel.history(
+        limit=50,
+        after=older.created_at,
+        before=newer.created_at,
+        oldest_first=True,
+    ):
+        messages.append(msg)
+    if newer.id != older.id:
+        messages.append(newer)
+    return [msg for msg in messages if not msg.author.bot]
+
+
+def format_comment_messages(messages: list[discord.Message]) -> str:
+    lines: list[str] = []
+    for msg in messages:
+        parts = []
+        if msg.content.strip():
+            parts.append(msg.content.strip())
+        if msg.attachments:
+            parts.extend(attachment.url for attachment in msg.attachments)
+        if parts:
+            lines.append(f"{msg.author.display_name}: {' '.join(parts)}")
+    return "\n".join(lines)
+
+
+if __name__ == "__main__":
+    client.run(DISCORD_TOKEN)
