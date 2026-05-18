@@ -1,5 +1,19 @@
 from __future__ import annotations
 
+"""Discord bot 的主程式。
+
+這個檔案負責「接收 Discord 事件」與「把使用者操作導向正確功能」：
+- 右鍵訊息保存餐廳資訊
+- 右鍵評論追加到指定餐廳
+- @bot 關鍵字搜尋餐廳
+- @bot 更新地圖，把 SQLite 資料同步到 Google Sheets
+- slash command 的輔助功能，例如 /list_restaurants、/export_map_csv
+
+可以把 bot.py 想成 MVC 架構裡的 Controller：
+它不直接處理資料庫細節，也不直接寫 Google Sheets，而是呼叫 db.py、
+extractor.py、sheets_sync.py 這些模組完成真正工作。
+"""
+
 import csv
 import io
 import os
@@ -17,9 +31,13 @@ from extractor import MessageSnippet, extract_restaurant
 from sheets_sync import sync_restaurants_to_sheet
 
 
+# 所有本機檔案路徑都以 bot.py 所在資料夾為基準。
+# 這樣不管你在 Windows、VM，或從哪個工作目錄啟動 bot，
+# 都會讀到同一份 .env、restaurants.sqlite3、service-account.json。
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
+# .env 是部署時放機密資料的地方；這些值不要 commit 到 GitHub。
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 DB_PATH_VALUE = os.getenv("DB_PATH", "restaurants.sqlite3")
@@ -34,16 +52,28 @@ if GOOGLE_SERVICE_ACCOUNT_FILE and not GOOGLE_SERVICE_ACCOUNT_FILE.is_absolute()
 GOOGLE_SHEETS_WORKSHEET = os.getenv("GOOGLE_SHEETS_WORKSHEET", "restaurants").strip() or "restaurants"
 GOOGLE_MY_MAPS_URL = os.getenv("GOOGLE_MY_MAPS_URL", "").strip()
 
+# 建立共用物件：
+# - db 負責所有 SQLite 操作
+# - openai_client 負責呼叫 OpenAI API
+# - MESSAGE_ID_RE 用來從 Discord 訊息連結中抓 message id
 db = RestaurantDB(str(DB_PATH))
 db.cleanup_comment_placeholders()
 openai_client = OpenAI()
 MESSAGE_ID_RE = re.compile(r"(\d{17,25})")
 
+# message_content 是讓 bot 可以讀到一般訊息文字的 intent。
+# @bot 拉麵、@bot 更新地圖 這類功能都需要它。
 intents = discord.Intents.default()
 intents.message_content = True
 
 
 class RestaurantSelect(discord.ui.Select):
+    """查詢結果用的餐廳下拉選單。
+
+    目前主要保留給 slash command 的選擇式查詢使用。
+    Discord 下拉選單最多只能有 25 個選項，所以這裡也只取前 25 筆。
+    """
+
     def __init__(self, restaurants: list[Restaurant]) -> None:
         options = [
             discord.SelectOption(
@@ -69,12 +99,23 @@ class RestaurantSelect(discord.ui.Select):
 
 
 class RestaurantSelectView(discord.ui.View):
+    """把 RestaurantSelect 包成 Discord View。
+
+    View 是 Discord UI 元件的容器；Select、Button 都要放在 View 裡。
+    """
+
     def __init__(self, restaurants: list[Restaurant]) -> None:
         super().__init__(timeout=180)
         self.add_item(RestaurantSelect(restaurants))
 
 
 class SearchResultsView(discord.ui.View):
+    """搜尋結果分頁。
+
+    一次只顯示一間餐廳，避免「拉麵」這種關鍵字命中很多店時洗版。
+    使用者可以按「上一頁 / 下一頁」在同一則訊息裡切換結果。
+    """
+
     def __init__(self, keyword: str, restaurants: list[Restaurant]) -> None:
         super().__init__(timeout=180)
         self.keyword = keyword
@@ -83,11 +124,13 @@ class SearchResultsView(discord.ui.View):
         self.update_buttons()
 
     def current_embed(self) -> discord.Embed:
+        """把目前 index 指到的餐廳轉成 Discord embed。"""
         embed = restaurant_embed(self.restaurants[self.index])
         embed.set_footer(text=f"{self.keyword} 搜尋結果 {self.index + 1} / {len(self.restaurants)}")
         return embed
 
     def update_buttons(self) -> None:
+        """根據目前頁數決定上一頁/下一頁按鈕能不能按。"""
         self.previous_page.disabled = self.index <= 0
         self.next_page.disabled = self.index >= len(self.restaurants) - 1
 
@@ -113,6 +156,12 @@ class SearchResultsView(discord.ui.View):
 
 
 class AreaSelect(discord.ui.Select):
+    """先用關鍵字搜尋，再讓使用者選地區。
+
+    例如 @bot 拉麵 找到很多間時，先分成「府中」「池袋」「西國立」等地區，
+    使用者選完地區後才進入 SearchResultsView 分頁。
+    """
+
     def __init__(self, keyword: str, restaurants: list[Restaurant]) -> None:
         self.keyword = keyword
         self.restaurants = restaurants
@@ -133,6 +182,7 @@ class AreaSelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
+        """使用者選地區後，過濾出該地區餐廳並改成分頁結果。"""
         area = self.values[0]
         restaurants = [
             restaurant
@@ -148,12 +198,20 @@ class AreaSelect(discord.ui.Select):
 
 
 class AreaSelectView(discord.ui.View):
+    """地區下拉選單的 View 容器。"""
+
     def __init__(self, keyword: str, restaurants: list[Restaurant]) -> None:
         super().__init__(timeout=180)
         self.add_item(AreaSelect(keyword, restaurants))
 
 
 class CommentRestaurantSelect(discord.ui.Select):
+    """把單則 Discord 評論追加到某間餐廳的選單。
+
+    使用者右鍵一則評論 → 保存為餐廳評論 → bot 顯示這個選單。
+    選中餐廳後，callback 會呼叫 db.append_comment 寫入 SQLite。
+    """
+
     def __init__(self, restaurants: list[Restaurant], comment: str, created_by: str) -> None:
         self.comment = comment
         self.created_by = created_by
@@ -190,12 +248,20 @@ class CommentRestaurantSelect(discord.ui.Select):
 
 
 class CommentRestaurantSelectView(discord.ui.View):
+    """評論追加選單的 View 容器。"""
+
     def __init__(self, restaurants: list[Restaurant], comment: str, created_by: str) -> None:
         super().__init__(timeout=180)
         self.add_item(CommentRestaurantSelect(restaurants, comment, created_by))
 
 
 class RestaurantBot(discord.Client):
+    """自訂 Discord Client。
+
+    discord.Client 負責和 Discord Gateway 保持連線。
+    CommandTree 負責 slash command 和右鍵應用程式選單。
+    """
+
     def __init__(self) -> None:
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
@@ -209,11 +275,20 @@ client = RestaurantBot()
 
 @client.event
 async def on_ready() -> None:
+    """Discord 連線成功時觸發。"""
     print(f"Logged in as {client.user}")
 
 
 @client.event
 async def on_message(message: discord.Message) -> None:
+    """處理一般訊息。
+
+    這裡只處理「有提到 bot」的訊息：
+    - @bot 更新地圖：同步 Google Sheet
+    - @bot 地圖：回 My Maps 連結
+    - @bot 拉麵：用「拉麵」搜尋餐廳
+    """
+
     if message.author.bot or not client.user:
         return
     if client.user not in message.mentions:
@@ -239,6 +314,8 @@ async def save_restaurant_from_message(
     interaction: discord.Interaction,
     message: discord.Message,
 ) -> None:
+    """右鍵訊息選單：從指定訊息抽取餐廳資訊並保存。"""
+
     await interaction.response.defer(thinking=True, ephemeral=True)
 
     snippets = await snippets_for_target_message(message)
@@ -254,6 +331,8 @@ async def save_comment_from_message(
     interaction: discord.Interaction,
     message: discord.Message,
 ) -> None:
+    """右鍵訊息選單：把指定訊息當作評論追加到某間餐廳。"""
+
     comment = format_comment_messages([message])
     if not comment:
         await interaction.response.send_message(
@@ -279,6 +358,8 @@ async def save_comment_from_message(
 
 @client.tree.command(name="save_restaurant", description="請改用訊息右鍵選單保存指定餐廳資訊")
 async def save_restaurant(interaction: discord.Interaction) -> None:
+    """保留舊 slash command，提醒使用者改用右鍵選單。"""
+
     await interaction.response.send_message(
         "現在請對要保存的那則訊息按右鍵或長按，選「應用程式」→「保存餐廳資訊」。"
         "這樣我只會讀取你指定的那則訊息，不會再往上抓最近幾則。",
@@ -292,6 +373,12 @@ async def save_extracted_restaurant(
     snippets: list[MessageSnippet],
     source_message_id: int | None,
 ) -> None:
+    """共用的餐廳保存流程。
+
+    右鍵保存餐廳時會先把 Discord message 轉成 MessageSnippet，
+    再進到這裡呼叫 OpenAI 抽取餐廳欄位，最後寫進 SQLite。
+    """
+
     if not snippets:
         await interaction.followup.send(
             "這則訊息沒有可讀取的文字或附件，我先不存。",
@@ -344,6 +431,12 @@ async def save_extracted_restaurant(
 
 
 async def snippets_for_target_message(message: discord.Message) -> list[MessageSnippet]:
+    """把指定 Discord 訊息轉成 AI 可讀的片段。
+
+    如果這則訊息是「回覆」別人的訊息，會連同被回覆的原訊息一起送給 AI。
+    這能支援「這間好吃」回覆一則食べログ連結的情境。
+    """
+
     messages: list[discord.Message] = []
     referenced = await fetch_referenced_message(message)
     if referenced and not referenced.author.bot:
@@ -354,6 +447,8 @@ async def snippets_for_target_message(message: discord.Message) -> list[MessageS
 
 
 async def fetch_referenced_message(message: discord.Message) -> discord.Message | None:
+    """取得 Discord 回覆訊息的原始 message。"""
+
     reference = message.reference
     if not reference or not reference.message_id:
         return None
@@ -369,6 +464,8 @@ async def fetch_referenced_message(message: discord.Message) -> discord.Message 
 
 
 def message_to_snippet(message: discord.Message) -> MessageSnippet:
+    """把 discord.Message 轉成 extractor.py 使用的簡單資料結構。"""
+
     return MessageSnippet(
         author=message.author.display_name,
         content=message.content,
@@ -379,6 +476,8 @@ def message_to_snippet(message: discord.Message) -> MessageSnippet:
 @client.tree.command(name="find_restaurant", description="用關鍵字查詢已儲存餐廳")
 @app_commands.describe(keyword="例如：拉麵、咖啡、澀谷、家系")
 async def find_restaurant(interaction: discord.Interaction, keyword: str) -> None:
+    """slash command 搜尋餐廳。"""
+
     restaurants = db.search(keyword)
     if not restaurants:
         await interaction.response.send_message(f"目前沒有找到「{keyword}」。", ephemeral=True)
@@ -406,6 +505,8 @@ async def send_search_results(
     target: discord.Message,
     keyword: str,
 ) -> None:
+    """@bot 關鍵字搜尋共用流程。"""
+
     restaurants = db.search(keyword)
     if not restaurants:
         await target.reply(f"目前沒有找到「{keyword}」。", mention_author=False)
@@ -431,6 +532,8 @@ async def send_search_results(
 
 @client.tree.command(name="list_restaurants", description="列出目前已儲存的餐廳與 ID")
 async def list_restaurants(interaction: discord.Interaction) -> None:
+    """列出目前資料庫裡的餐廳與 ID，方便除錯與手動操作。"""
+
     restaurants = db.all()
     if not restaurants:
         await interaction.response.send_message(
@@ -461,6 +564,8 @@ async def add_comment(
     start_message: str,
     end_message: str,
 ) -> None:
+    """用開始/結束訊息連結，把一段 Discord 訊息追加成評論。"""
+
     await interaction.response.defer(thinking=True, ephemeral=True)
 
     target = resolve_restaurant(restaurant)
@@ -511,6 +616,8 @@ async def add_comment(
 
 @client.tree.command(name="export_map_csv", description="匯出餐廳 CSV，可匯入 Google My Maps")
 async def export_map_csv(interaction: discord.Interaction) -> None:
+    """把餐廳資料匯出成 CSV，作為 My Maps 的手動備援方案。"""
+
     restaurants = db.all()
     if not restaurants:
         await interaction.response.send_message("目前還沒有餐廳可以匯出。", ephemeral=True)
@@ -553,17 +660,23 @@ async def export_map_csv(interaction: discord.Interaction) -> None:
 
 @client.tree.command(name="sync_google_sheet", description="把目前餐廳資料同步到 Google Sheet")
 async def sync_google_sheet(interaction: discord.Interaction) -> None:
+    """slash command：同步 SQLite 餐廳資料到 Google Sheet。"""
+
     await interaction.response.defer(thinking=True, ephemeral=True)
     await sync_google_sheet_to_discord(interaction)
 
 
 async def sync_google_sheet_from_message(message: discord.Message) -> None:
+    """@bot 更新地圖：從一般訊息觸發 Google Sheet 同步。"""
+
     status_message = await message.reply("正在同步 Google Sheet...", mention_author=False)
     result = sync_google_sheet_data()
     await status_message.edit(content=result)
 
 
 async def send_map_url(message: discord.Message) -> None:
+    """@bot 地圖：回覆 My Maps 分享網址。"""
+
     if not GOOGLE_MY_MAPS_URL:
         await message.reply(
             "還沒有設定 My Maps 網址。請先在 .env 加上 GOOGLE_MY_MAPS_URL。",
@@ -577,11 +690,15 @@ async def send_map_url(message: discord.Message) -> None:
 
 
 async def sync_google_sheet_to_discord(interaction: discord.Interaction) -> None:
+    """slash command 的同步回覆包裝。"""
+
     result = sync_google_sheet_data()
     await interaction.followup.send(result, ephemeral=False)
 
 
 def sync_google_sheet_data() -> str:
+    """實際執行 Google Sheet 同步，並把結果整理成可回覆 Discord 的文字。"""
+
     if not GOOGLE_SHEETS_ID:
         return "尚未設定 GOOGLE_SHEETS_ID。請先在 .env 填入 Google Sheet ID。"
     if not GOOGLE_SERVICE_ACCOUNT_FILE or not GOOGLE_SERVICE_ACCOUNT_FILE.exists():
@@ -620,6 +737,8 @@ def sync_google_sheet_data() -> str:
 
 
 def restaurant_embed(restaurant: Restaurant) -> discord.Embed:
+    """把 Restaurant 轉成 Discord embed 卡片。"""
+
     embed = discord.Embed(
         title=restaurant.name,
         description=restaurant.comments,
@@ -639,10 +758,14 @@ def restaurant_embed(restaurant: Restaurant) -> discord.Embed:
 
 
 def unique_areas(restaurants: list[Restaurant]) -> list[str]:
+    """從餐廳列表中取出不重複地區。"""
+
     return sorted({(restaurant.area or "未分類地區").strip() for restaurant in restaurants})
 
 
 def resolve_restaurant(value: str) -> Restaurant | str:
+    """把使用者輸入的餐廳 ID 或關鍵字解析成 Restaurant。"""
+
     text = value.strip()
     if text.isdigit():
         restaurant = db.get(int(text))
@@ -659,6 +782,8 @@ def resolve_restaurant(value: str) -> Restaurant | str:
 
 
 def parse_message_id(value: str) -> int | None:
+    """從 Discord 訊息 ID 或訊息連結中抓出 message id。"""
+
     matches = MESSAGE_ID_RE.findall(value)
     return int(matches[-1]) if matches else None
 
@@ -668,6 +793,8 @@ async def messages_between(
     first: discord.Message,
     second: discord.Message,
 ) -> list[discord.Message]:
+    """讀取兩則訊息之間的 Discord 訊息。"""
+
     older, newer = sorted([first, second], key=lambda msg: msg.created_at)
     messages = [older]
     async for msg in channel.history(
@@ -683,6 +810,8 @@ async def messages_between(
 
 
 def format_comment_messages(messages: list[discord.Message]) -> str:
+    """把多則 Discord 訊息整理成適合存入 comments 欄位的文字。"""
+
     lines: list[str] = []
     for msg in messages:
         parts = []

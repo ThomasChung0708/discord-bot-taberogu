@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+"""餐廳資訊抽取模組。
+
+bot.py 會把 Discord 訊息整理成 MessageSnippet，交給這個模組。
+這個模組再做三件事：
+1. 從文字中找食べログ網址
+2. 如果有食べログ網址，嘗試抓頁面標題補足店名
+3. 呼叫 OpenAI，把訊息整理成結構化餐廳資料
+"""
+
 import json
 import re
 from dataclasses import dataclass
@@ -15,6 +24,8 @@ TABELOG_RE = re.compile(r"https?://(?:[a-z0-9-]+\.)?tabelog\.com/[^\s)>]+", re.I
 
 @dataclass(frozen=True)
 class MessageSnippet:
+    """送進 AI 前的簡化版 Discord 訊息。"""
+
     author: str
     content: str
     attachment_urls: list[str]
@@ -22,6 +33,8 @@ class MessageSnippet:
 
 @dataclass(frozen=True)
 class ExtractionResult:
+    """AI 抽取後回傳給 bot.py 的餐廳資料。"""
+
     name: str | None
     category: str
     area: str | None
@@ -33,11 +46,19 @@ class ExtractionResult:
 
 
 def find_tabelog_url(text: str) -> str | None:
+    """用正規表示式找出第一個食べログ網址。"""
+
     match = TABELOG_RE.search(text)
     return match.group(0) if match else None
 
 
 def fetch_tabelog_title(url: str | None) -> str | None:
+    """讀取食べログ頁面標題。
+
+    這不是必要步驟；如果網路失敗或網站擋住請求，就回傳 None。
+    bot 仍會把原本 Discord 訊息交給 AI 判斷。
+    """
+
     if not url:
         return None
     try:
@@ -60,6 +81,12 @@ def fetch_tabelog_title(url: str | None) -> str | None:
 
 
 def google_maps_search_url(name: str, area: str | None = None) -> str:
+    """產生 Google Maps 搜尋連結。
+
+    這不是精準座標，而是用店名 + 地區讓 Google Maps 自己搜尋。
+    My Maps 匯入時也可以用 name + area 做定位。
+    """
+
     query = f"{name} {area or ''}".strip()
     return f"https://www.google.com/maps/search/?api=1&query={quote_plus(query)}"
 
@@ -70,6 +97,12 @@ def extract_restaurant(
     model: str,
     messages: list[MessageSnippet],
 ) -> ExtractionResult:
+    """從多則訊息抽取一間餐廳資料。
+
+    目前設計是「指定訊息」或「指定訊息 + 被回覆的原訊息」抽一間餐廳。
+    如果未來要一次抽多間餐廳，這裡的回傳型別就要改成 list[ExtractionResult]。
+    """
+
     plain_messages = []
     all_text = []
     for msg in messages:
@@ -134,6 +167,8 @@ def extract_restaurant(
 
 
 def _clean_optional(value: object) -> str | None:
+    """把 AI 回傳的欄位整理成 None 或非空字串。"""
+
     if value is None:
         return None
     text = str(value).strip()

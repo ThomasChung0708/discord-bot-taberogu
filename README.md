@@ -12,6 +12,8 @@
 - `/find_restaurant 拉麵`：用關鍵字查詢，出現餐廳選單。
 - 選餐廳後會顯示食べログ網址、Google Maps 連結、當時 Discord 的評論。
 - `/export_map_csv`：匯出 CSV，可匯入 Google My Maps 或 Google Sheets。
+- `/list_restaurant`：列出目前已儲存的餐廳與ID
+ 
 
 ## 設定
 

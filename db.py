@@ -1,5 +1,17 @@
 from __future__ import annotations
 
+"""SQLite 資料存取層。
+
+這個檔案只負責「資料怎麼存、怎麼查」：
+- 建立 restaurants 資料表
+- 新增或更新餐廳
+- 搜尋餐廳
+- 追加評論
+- 做日文搜尋正規化，例如 カツ / かつ / ｶﾂ 視為同一種搜尋字
+
+把資料庫邏輯集中在這裡，可以讓 bot.py 不需要知道 SQL 細節。
+"""
+
 import json
 import sqlite3
 import unicodedata
@@ -12,6 +24,12 @@ from typing import Iterable
 
 @dataclass(frozen=True)
 class Restaurant:
+    """餐廳資料在 Python 裡的表示方式。
+
+    dataclass 讓資料結構清楚、型別明確，也比直接傳 dict 更好理解。
+    frozen=True 代表建立後不應該直接修改欄位；要修改資料就透過 RestaurantDB。
+    """
+
     id: int
     name: str
     category: str
@@ -27,17 +45,28 @@ class Restaurant:
 
 
 class RestaurantDB:
+    """包裝 SQLite 操作的類別。"""
+
     def __init__(self, path: str) -> None:
         self.path = Path(path)
         self._init()
 
     def connect(self) -> sqlite3.Connection:
+        """建立 SQLite 連線，並讓查詢結果可以用 row["欄位名"] 讀取。"""
         conn = sqlite3.connect(self.path)
         conn.row_factory = sqlite3.Row
         return conn
 
     @contextmanager
     def session(self) -> Iterator[sqlite3.Connection]:
+        """資料庫交易的 helper。
+
+        with self.session() as conn:
+            ...
+
+        離開 with 區塊時會 commit 並關閉連線，避免忘記關資料庫。
+        """
+
         conn = self.connect()
         try:
             yield conn
@@ -46,6 +75,12 @@ class RestaurantDB:
             conn.close()
 
     def _init(self) -> None:
+        """初始化資料表與索引。
+
+        CREATE TABLE IF NOT EXISTS 代表如果資料表已存在就不重建，
+        因此每次 bot 啟動都可以安全呼叫。
+        """
+
         with self.session() as conn:
             conn.execute(
                 """
@@ -84,6 +119,12 @@ class RestaurantDB:
         source_message_id: int | None,
         created_by: str,
     ) -> int:
+        """新增或覆蓋同一家餐廳。
+
+        這裡用 UNIQUE(name, tabelog_url) 避免同一間餐廳重複建立。
+        如果 name + tabelog_url 已存在，INSERT OR REPLACE 會保留原本 id。
+        """
+
         clean_keywords = sorted({k.strip().lower() for k in keywords if k.strip()})
         with self.session() as conn:
             cur = conn.execute(
@@ -115,6 +156,13 @@ class RestaurantDB:
             return int(cur.lastrowid or conn.execute("SELECT last_insert_rowid()").fetchone()[0])
 
     def search(self, keyword: str, limit: int = 25) -> list[Restaurant]:
+        """搜尋餐廳。
+
+        第一段用 SQLite LIKE 做快速搜尋。
+        第二段在結果不足時，用 Python 做日文正規化搜尋：
+        例如使用者搜尋「牛かつ」，也能命中資料中的「牛カツ」。
+        """
+
         key = keyword.strip().lower()
         with self.session() as conn:
             rows = conn.execute(
@@ -147,6 +195,8 @@ class RestaurantDB:
         return [self._row_to_restaurant(row) for row in rows[:limit]]
 
     def get(self, restaurant_id: int) -> Restaurant | None:
+        """用 ID 取得單一餐廳。"""
+
         with self.session() as conn:
             row = conn.execute(
                 "SELECT * FROM restaurants WHERE id = ?", (restaurant_id,)
@@ -160,6 +210,12 @@ class RestaurantDB:
         comment: str,
         created_by: str,
     ) -> Restaurant | None:
+        """把評論文字追加到某間餐廳。
+
+        如果原本 comments 只是「僅保存基本資料」這種佔位文字，
+        追加第一則評論時會先把佔位文字拿掉。
+        """
+
         restaurant = self.get(restaurant_id)
         if not restaurant:
             return None
@@ -177,6 +233,8 @@ class RestaurantDB:
         return self.get(restaurant_id)
 
     def cleanup_comment_placeholders(self) -> int:
+        """清理舊資料中殘留的 comments 佔位文字。"""
+
         with self.session() as conn:
             rows = conn.execute("SELECT id, comments FROM restaurants").fetchall()
             changed = 0
@@ -192,6 +250,8 @@ class RestaurantDB:
             return changed
 
     def all(self) -> list[Restaurant]:
+        """取得全部餐廳，最新建立的排前面。"""
+
         with self.session() as conn:
             rows = conn.execute(
                 "SELECT * FROM restaurants ORDER BY created_at DESC"
@@ -200,6 +260,8 @@ class RestaurantDB:
 
     @staticmethod
     def _row_to_restaurant(row: sqlite3.Row) -> Restaurant:
+        """把 SQLite row 轉成 Restaurant dataclass。"""
+
         return Restaurant(
             id=int(row["id"]),
             name=row["name"],
@@ -217,6 +279,8 @@ class RestaurantDB:
 
 
 def _is_basic_info_placeholder(comments: str) -> bool:
+    """判斷 comments 是否只是沒有評論時的佔位文字。"""
+
     return comments in {
         "僅保存了基本餐廳資訊，無評論內容。",
         "僅保存了基本餐廳資訊，無評論內容",
@@ -224,6 +288,8 @@ def _is_basic_info_placeholder(comments: str) -> bool:
 
 
 def _remove_basic_info_placeholder(comments: str) -> str:
+    """從 comments 開頭移除舊版佔位文字。"""
+
     lines = comments.splitlines()
     while lines and _is_basic_info_placeholder(lines[0].strip()):
         lines.pop(0)
@@ -233,6 +299,8 @@ def _remove_basic_info_placeholder(comments: str) -> str:
 
 
 def normalize_restaurant_row(row: sqlite3.Row) -> str:
+    """把餐廳 row 的可搜尋欄位合併並正規化。"""
+
     return normalize_search_text(
         " ".join(
             str(part or "")
@@ -248,11 +316,20 @@ def normalize_restaurant_row(row: sqlite3.Row) -> str:
 
 
 def normalize_search_text(text: str) -> str:
+    """把搜尋文字正規化。
+
+    NFKC：把半形片假名等字元轉成標準形式。
+    casefold：比 lower 更適合做跨語言大小寫正規化。
+    katakana_to_hiragana：把片假名轉平假名，提升日文搜尋命中率。
+    """
+
     normalized = unicodedata.normalize("NFKC", text).casefold()
     return "".join(katakana_to_hiragana(char) for char in normalized)
 
 
 def katakana_to_hiragana(char: str) -> str:
+    """單一字元的片假名轉平假名。"""
+
     code = ord(char)
     if 0x30A1 <= code <= 0x30F6:
         return chr(code - 0x60)
