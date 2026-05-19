@@ -19,7 +19,7 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, Header, HTTPException, FastAPI
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
@@ -43,6 +43,7 @@ GOOGLE_SERVICE_ACCOUNT_FILE = (
 if GOOGLE_SERVICE_ACCOUNT_FILE and not GOOGLE_SERVICE_ACCOUNT_FILE.is_absolute():
     GOOGLE_SERVICE_ACCOUNT_FILE = BASE_DIR / GOOGLE_SERVICE_ACCOUNT_FILE
 GOOGLE_SHEETS_WORKSHEET = os.getenv("GOOGLE_SHEETS_WORKSHEET", "restaurants").strip() or "restaurants"
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
 
 db = RestaurantDB(str(DB_PATH))
 app = FastAPI(title="Discord 食べログ Bot Admin")
@@ -86,8 +87,28 @@ def restaurant_to_dict(restaurant: Restaurant) -> dict:
     }
 
 
+def require_admin(x_admin_password: str = Header(default="")) -> None:
+    """保護會修改資料的 API。
+
+    公開頁只能讀資料；編輯、刪除、匯入、同步都需要管理密碼。
+    密碼放在 .env 的 ADMIN_PASSWORD，不寫進 GitHub。
+    """
+
+    if not ADMIN_PASSWORD:
+        raise HTTPException(status_code=403, detail="尚未設定 ADMIN_PASSWORD")
+    if x_admin_password != ADMIN_PASSWORD:
+        raise HTTPException(status_code=401, detail="管理密碼錯誤")
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> str:
+    """公開只讀頁。"""
+
+    return PUBLIC_HTML
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_index() -> str:
     """管理後台首頁。
 
     為了讓專案保持簡單，第一版先把 HTML/CSS/JS 放在同一個檔案。
@@ -95,6 +116,20 @@ def index() -> str:
     """
 
     return ADMIN_HTML
+
+
+@app.get("/api/admin/status")
+def admin_status() -> dict:
+    """讓前端知道管理密碼是否已設定。"""
+
+    return {"password_configured": bool(ADMIN_PASSWORD)}
+
+
+@app.post("/api/admin/check")
+def admin_check(_: None = Depends(require_admin)) -> dict:
+    """檢查管理密碼。"""
+
+    return {"ok": True}
 
 
 @app.get("/api/restaurants")
@@ -128,7 +163,11 @@ def get_restaurant(restaurant_id: int) -> dict:
 
 
 @app.put("/api/restaurants/{restaurant_id}")
-def update_restaurant(restaurant_id: int, payload: RestaurantPayload) -> dict:
+def update_restaurant(
+    restaurant_id: int,
+    payload: RestaurantPayload,
+    _: None = Depends(require_admin),
+) -> dict:
     """更新餐廳資料。"""
 
     restaurant = db.update_restaurant(
@@ -147,7 +186,10 @@ def update_restaurant(restaurant_id: int, payload: RestaurantPayload) -> dict:
 
 
 @app.delete("/api/restaurants/{restaurant_id}")
-def delete_restaurant(restaurant_id: int) -> dict:
+def delete_restaurant(
+    restaurant_id: int,
+    _: None = Depends(require_admin),
+) -> dict:
     """刪除餐廳。"""
 
     if not db.delete_restaurant(restaurant_id):
@@ -156,7 +198,11 @@ def delete_restaurant(restaurant_id: int) -> dict:
 
 
 @app.post("/api/restaurants/{restaurant_id}/comments")
-def append_comment(restaurant_id: int, payload: CommentPayload) -> dict:
+def append_comment(
+    restaurant_id: int,
+    payload: CommentPayload,
+    _: None = Depends(require_admin),
+) -> dict:
     """追加評論到指定餐廳。"""
 
     restaurant = db.append_comment(
@@ -170,7 +216,7 @@ def append_comment(restaurant_id: int, payload: CommentPayload) -> dict:
 
 
 @app.post("/api/sync-sheet")
-def sync_sheet() -> dict:
+def sync_sheet(_: None = Depends(require_admin)) -> dict:
     """從後台手動同步 Google Sheet。"""
 
     if not GOOGLE_SHEETS_ID:
@@ -188,7 +234,7 @@ def sync_sheet() -> dict:
 
 
 @app.post("/api/import-sheet")
-def import_sheet() -> dict:
+def import_sheet(_: None = Depends(require_admin)) -> dict:
     """從 Google Sheet 匯入餐廳到 SQLite。"""
 
     if not GOOGLE_SHEETS_ID:
@@ -236,6 +282,224 @@ def split_keywords(value: str) -> list[str]:
 
     text = str(value).replace("、", ",").replace("\n", ",")
     return [part.strip() for part in text.split(",") if part.strip()]
+
+
+PUBLIC_HTML = r"""
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>共享美食清單</title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #1f2933;
+      --muted: #657484;
+      --line: #d9e0e7;
+      --accent: #0f766e;
+      --accent-soft: #dff3ef;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+
+    header {
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      padding: 16px 22px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      position: sticky;
+      top: 0;
+      z-index: 5;
+    }
+
+    h1 { font-size: 20px; margin: 0; }
+    a { color: var(--accent); text-decoration: none; }
+    main {
+      max-width: 1040px;
+      margin: 0 auto;
+      padding: 18px;
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1fr 160px 160px;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+
+    input, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      font: inherit;
+      background: #fff;
+    }
+
+    .summary {
+      color: var(--muted);
+      margin-bottom: 10px;
+      font-size: 14px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 10px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+    }
+
+    .card h2 {
+      font-size: 17px;
+      margin: 0 0 6px;
+    }
+
+    .meta, .comments {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .links a {
+      background: var(--accent-soft);
+      border-radius: 6px;
+      padding: 5px 8px;
+      font-size: 13px;
+    }
+
+    @media (max-width: 760px) {
+      header { align-items: flex-start; flex-direction: column; }
+      .toolbar { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>共享美食清單</h1>
+    <a href="/admin">管理後台</a>
+  </header>
+  <main>
+    <div class="toolbar">
+      <input id="keyword" placeholder="搜尋店名、分類、地區、評論">
+      <select id="area"><option value="">全部地區</option></select>
+      <select id="category"><option value="">全部分類</option></select>
+    </div>
+    <div id="summary" class="summary"></div>
+    <div id="grid" class="grid"></div>
+  </main>
+
+  <script>
+    const state = { restaurants: [], areas: [], categories: [] };
+    const $ = (id) => document.getElementById(id);
+
+    function params() {
+      const values = new URLSearchParams();
+      if ($("keyword").value.trim()) values.set("keyword", $("keyword").value.trim());
+      if ($("area").value) values.set("area", $("area").value);
+      if ($("category").value) values.set("category", $("category").value);
+      return values.toString();
+    }
+
+    async function loadRestaurants() {
+      const response = await fetch(`/api/restaurants?${params()}`);
+      const data = await response.json();
+      state.restaurants = data.restaurants.sort((a, b) => a.id - b.id);
+      state.areas = data.areas;
+      state.categories = data.categories;
+      renderFilters();
+      renderCards();
+    }
+
+    function renderFilters() {
+      fillSelect($("area"), "全部地區", state.areas);
+      fillSelect($("category"), "全部分類", state.categories);
+    }
+
+    function fillSelect(select, label, values) {
+      const current = select.value;
+      select.innerHTML = `<option value="">${label}</option>`;
+      values.forEach((value) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = value;
+        select.appendChild(option);
+      });
+      if (values.includes(current)) select.value = current;
+    }
+
+    function renderCards() {
+      $("summary").textContent = `目前顯示 ${state.restaurants.length} 間餐廳`;
+      $("grid").innerHTML = "";
+      state.restaurants.forEach((restaurant) => {
+        const card = document.createElement("article");
+        card.className = "card";
+        card.innerHTML = `
+          <h2>${escapeHtml(restaurant.name)}</h2>
+          <div class="meta">ID ${restaurant.id} / ${escapeHtml(restaurant.category)} ${escapeHtml(restaurant.area || "")}</div>
+          <div class="comments">${escapeHtml(shortText(restaurant.comments || ""))}</div>
+          <div class="links">
+            ${restaurant.google_maps_url ? `<a target="_blank" rel="noreferrer" href="${escapeAttr(restaurant.google_maps_url)}">Google Maps</a>` : ""}
+            ${restaurant.tabelog_url ? `<a target="_blank" rel="noreferrer" href="${escapeAttr(restaurant.tabelog_url)}">食べログ</a>` : ""}
+          </div>
+        `;
+        $("grid").appendChild(card);
+      });
+    }
+
+    function shortText(value) {
+      return value.length > 120 ? `${value.slice(0, 120)}...` : value;
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+      }[char]));
+    }
+
+    function escapeAttr(value) {
+      return escapeHtml(value);
+    }
+
+    function debounce(fn, delay) {
+      let timer = null;
+      return (...args) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => fn(...args), delay);
+      };
+    }
+
+    $("keyword").addEventListener("input", debounce(loadRestaurants, 250));
+    $("area").addEventListener("change", loadRestaurants);
+    $("category").addEventListener("change", loadRestaurants);
+    loadRestaurants();
+  </script>
+</body>
+</html>
+"""
 
 
 ADMIN_HTML = r"""
@@ -344,6 +608,18 @@ ADMIN_HTML = r"""
     }
 
     button.primary:hover { background: var(--accent-strong); }
+
+    .nav-link {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 11px;
+      color: var(--accent);
+      text-decoration: none;
+      background: #fff;
+    }
+
     button.danger {
       border-color: #fecaca;
       background: var(--danger-bg);
@@ -452,6 +728,33 @@ ADMIN_HTML = r"""
       font-size: 14px;
     }
 
+    .login-panel {
+      background: #f6f7f9;
+      border-bottom: 1px solid var(--line);
+      padding: 18px 22px;
+    }
+
+    .login-panel.hidden { display: none; }
+
+    .login-box {
+      max-width: 520px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .login-box h2 {
+      font-size: 17px;
+      margin: 0 0 6px;
+    }
+
+    .login-box p {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
     @media (max-width: 860px) {
       main { grid-template-columns: 1fr; }
       .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
@@ -464,11 +767,22 @@ ADMIN_HTML = r"""
   <header>
     <h1>食べログ Bot 管理後台</h1>
     <div class="actions">
+      <a class="nav-link" href="/">公開頁</a>
       <button id="importSheet" class="primary">從 Google Sheet 匯入</button>
       <button id="syncSheet">DB 同步到 Sheet</button>
       <button id="reload">重新整理</button>
     </div>
   </header>
+
+  <section id="loginPanel" class="login-panel">
+    <div class="login-box">
+      <h2>管理密碼</h2>
+      <p>編輯、刪除、匯入與同步需要管理密碼。</p>
+      <input id="adminPassword" type="password" placeholder="輸入 ADMIN_PASSWORD">
+      <button id="loginButton" class="primary" type="button">進入管理後台</button>
+      <div id="loginMessage" class="message"></div>
+    </div>
+  </section>
 
   <main>
     <section class="sidebar">
@@ -531,7 +845,8 @@ ADMIN_HTML = r"""
       areas: [],
       categories: [],
       page: 1,
-      pageSize: 10
+      pageSize: 10,
+      adminPassword: localStorage.getItem("tabelogAdminPassword") || ""
     };
 
     const $ = (id) => document.getElementById(id);
@@ -539,6 +854,40 @@ ADMIN_HTML = r"""
     function setMessage(text, isError = false) {
       $("message").textContent = text;
       $("message").style.color = isError ? "var(--danger)" : "var(--accent-strong)";
+    }
+
+    function setLoginMessage(text, isError = false) {
+      $("loginMessage").textContent = text;
+      $("loginMessage").style.color = isError ? "var(--danger)" : "var(--accent-strong)";
+    }
+
+    function adminHeaders() {
+      return {
+        "Content-Type": "application/json",
+        "X-Admin-Password": state.adminPassword
+      };
+    }
+
+    async function checkAdminPassword() {
+      const response = await fetch("/api/admin/check", {
+        method: "POST",
+        headers: {"X-Admin-Password": state.adminPassword}
+      });
+      return response.ok;
+    }
+
+    async function initAdminAuth() {
+      const status = await fetch("/api/admin/status").then((response) => response.json());
+      if (!status.password_configured) {
+        setLoginMessage("尚未設定 ADMIN_PASSWORD。請先在 .env 裡加入管理密碼。", true);
+        return;
+      }
+      if (state.adminPassword && await checkAdminPassword()) {
+        $("loginPanel").classList.add("hidden");
+        return;
+      }
+      localStorage.removeItem("tabelogAdminPassword");
+      state.adminPassword = "";
     }
 
     function keywordParams() {
@@ -660,7 +1009,7 @@ ADMIN_HTML = r"""
       if (!state.selectedId) return;
       const response = await fetch(`/api/restaurants/${state.selectedId}`, {
         method: "PUT",
-        headers: {"Content-Type": "application/json"},
+        headers: adminHeaders(),
         body: JSON.stringify(editorPayload())
       });
       if (!response.ok) {
@@ -675,7 +1024,7 @@ ADMIN_HTML = r"""
       if (!state.selectedId || !$("newComment").value.trim()) return;
       const response = await fetch(`/api/restaurants/${state.selectedId}/comments`, {
         method: "POST",
-        headers: {"Content-Type": "application/json"},
+        headers: adminHeaders(),
         body: JSON.stringify({comment: $("newComment").value.trim(), created_by: "Admin"})
       });
       if (!response.ok) {
@@ -691,7 +1040,10 @@ ADMIN_HTML = r"""
     $("deleteRestaurant").addEventListener("click", async () => {
       if (!state.selectedId) return;
       if (!confirm("確定要刪除這間餐廳嗎？這個動作不能復原。")) return;
-      const response = await fetch(`/api/restaurants/${state.selectedId}`, {method: "DELETE"});
+      const response = await fetch(`/api/restaurants/${state.selectedId}`, {
+        method: "DELETE",
+        headers: {"X-Admin-Password": state.adminPassword}
+      });
       if (!response.ok) {
         setMessage("刪除失敗。", true);
         return;
@@ -706,7 +1058,10 @@ ADMIN_HTML = r"""
       button.disabled = true;
       button.textContent = "匯入中...";
       try {
-        const response = await fetch("/api/import-sheet", {method: "POST"});
+        const response = await fetch("/api/import-sheet", {
+          method: "POST",
+          headers: {"X-Admin-Password": state.adminPassword}
+        });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || "匯入失敗");
         alert(`已從 Google Sheet 匯入 ${data.imported} 筆，略過 ${data.skipped} 筆。`);
@@ -726,7 +1081,10 @@ ADMIN_HTML = r"""
       button.disabled = true;
       button.textContent = "同步中...";
       try {
-        const response = await fetch("/api/sync-sheet", {method: "POST"});
+        const response = await fetch("/api/sync-sheet", {
+          method: "POST",
+          headers: {"X-Admin-Password": state.adminPassword}
+        });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || "同步失敗");
         alert(`已同步 ${data.count} 筆餐廳到 Google Sheet。`);
@@ -739,6 +1097,21 @@ ADMIN_HTML = r"""
     });
 
     $("reload").addEventListener("click", loadRestaurants);
+    $("loginButton").addEventListener("click", async () => {
+      state.adminPassword = $("adminPassword").value;
+      if (!state.adminPassword) {
+        setLoginMessage("請輸入管理密碼。", true);
+        return;
+      }
+      if (!await checkAdminPassword()) {
+        setLoginMessage("管理密碼錯誤。", true);
+        return;
+      }
+      localStorage.setItem("tabelogAdminPassword", state.adminPassword);
+      $("loginPanel").classList.add("hidden");
+      setLoginMessage("");
+    });
+
     $("keyword").addEventListener("input", debounce(() => {
       state.page = 1;
       loadRestaurants();
@@ -770,6 +1143,7 @@ ADMIN_HTML = r"""
       }[char]));
     }
 
+    initAdminAuth();
     loadRestaurants();
   </script>
 </body>

@@ -32,6 +32,7 @@ GOOGLE_SHEETS_ID=你的 Google Sheet ID
 GOOGLE_SERVICE_ACCOUNT_FILE=service-account.json
 GOOGLE_SHEETS_WORKSHEET=restaurants
 GOOGLE_MY_MAPS_URL=你的 Google My Maps 分享網址
+ADMIN_PASSWORD=管理後台密碼
 ```
 
 3. 安裝套件：
@@ -120,7 +121,10 @@ GOOGLE_SHEETS_WORKSHEET=restaurants
 
 ## 管理後台
 
-`admin_app.py` 是一個簡單的網頁後台，會讀取同一份 `restaurants.sqlite3`。
+`admin_app.py` 會讀取同一份 `restaurants.sqlite3`，並提供兩個入口：
+
+- `/`：公開只讀頁，朋友可以查看和搜尋餐廳，但不能修改資料。
+- `/admin`：管理後台，需要 `ADMIN_PASSWORD` 才能編輯、刪除、匯入、同步。
 
 可以做的事：
 
@@ -152,10 +156,16 @@ uvicorn admin_app:app --host 127.0.0.1 --port 8000
 然後打開：
 
 ```text
+http://127.0.0.1:8000/admin
+```
+
+公開只讀頁：
+
+```text
 http://127.0.0.1:8000
 ```
 
-如果在 VM 上使用，建議先只綁 `127.0.0.1`，再用 SSH port forwarding 開啟，避免後台直接暴露在網路上。
+如果在 VM 上公開給朋友看，請只把公開頁當作分享入口。管理後台雖然有密碼，但正式公開時仍建議搭配 HTTPS 或反向代理。
 
 注意同步方向：
 
