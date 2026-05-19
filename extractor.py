@@ -12,7 +12,8 @@ bot.py 會把 Discord 訊息整理成 MessageSnippet，交給這個模組。
 import json
 import re
 from dataclasses import dataclass
-from urllib.parse import quote_plus
+from difflib import SequenceMatcher
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
 import requests
 from bs4 import BeautifulSoup
@@ -20,6 +21,10 @@ from openai import OpenAI
 
 
 TABELOG_RE = re.compile(r"https?://(?:[a-z0-9-]+\.)?tabelog\.com/[^\s)>]+", re.I)
+GOOGLE_MAPS_RE = re.compile(
+    r"https?://(?:www\.)?(?:google\.[^\s)>]+/maps|maps\.app\.goo\.gl|goo\.gl/maps)/[^\s)>]+",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -52,6 +57,13 @@ def find_tabelog_url(text: str) -> str | None:
     return match.group(0) if match else None
 
 
+def find_google_maps_url(text: str) -> str | None:
+    """用正規表示式找出第一個 Google Maps 網址。"""
+
+    match = GOOGLE_MAPS_RE.search(text)
+    return match.group(0) if match else None
+
+
 def fetch_tabelog_title(url: str | None) -> str | None:
     """讀取食べログ頁面標題。
 
@@ -78,6 +90,203 @@ def fetch_tabelog_title(url: str | None) -> str | None:
     if soup.title and soup.title.string:
         return soup.title.string.strip()
     return None
+
+
+def resolve_google_maps_url(url: str | None) -> str | None:
+    """把 Google Maps 短網址展開。
+
+    maps.app.goo.gl 這類短網址本身看不出店名，因此先用 HEAD/GET
+    跟隨跳轉，再從最後網址解析 /maps/place/店名。
+    """
+
+    if not url:
+        return None
+    try:
+        resp = requests.get(
+            url,
+            timeout=5,
+            allow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 restaurant-memory-bot/0.1"},
+        )
+        return resp.url or url
+    except requests.RequestException:
+        return url
+
+
+def place_name_from_google_maps_url(url: str | None) -> str | None:
+    """從 Google Maps URL 解析可能的店名。
+
+    支援常見格式：
+    - /maps/place/店名/...
+    - /maps/search/?api=1&query=店名
+    - ?q=店名
+    """
+
+    if not url:
+        return None
+    resolved_url = resolve_google_maps_url(url)
+    if not resolved_url:
+        return None
+
+    parsed = urlparse(resolved_url)
+    query = parse_qs(parsed.query)
+    for key in ("query", "q"):
+        values = query.get(key)
+        if values and values[0].strip():
+            return cleanup_place_name(values[0])
+
+    marker = "/maps/place/"
+    if marker in parsed.path:
+        place_part = parsed.path.split(marker, 1)[1].split("/", 1)[0]
+        return cleanup_place_name(unquote(place_part.replace("+", " ")))
+    return None
+
+
+def cleanup_place_name(value: str) -> str | None:
+    """清理 Google Maps URL 裡解析出的店名。"""
+
+    text = unquote(value).replace("+", " ").strip()
+    text = re.sub(r"\s+", " ", text)
+    return text or None
+
+
+def find_tabelog_url_by_search(name: str | None, area: str | None = None) -> str | None:
+    """用店名反查食べログ店家頁。
+
+    優先走使用者期待的流程：
+    1. 從 Google Maps 得到店名
+    2. 直接打食べログ站內搜尋
+    3. 從站內搜尋結果挑最像的店家頁
+
+    如果站內搜尋失敗，才退回搜尋引擎備援。
+
+    找不到時回傳 None，不影響餐廳保存。
+    """
+
+    if not name:
+        return None
+    return find_tabelog_url_by_site_search(name, area) or find_tabelog_url_by_web_search(name, area)
+
+
+def find_tabelog_url_by_site_search(name: str, area: str | None = None) -> str | None:
+    """直接使用食べログ站內搜尋找店家頁。"""
+
+    query = tabelog_search_query(name, area)
+    try:
+        resp = requests.get(
+            "https://tabelog.com/rstLst/",
+            params={"sw": query, "SrtT": "trend"},
+            timeout=8,
+            headers={
+                "User-Agent": "Mozilla/5.0 restaurant-memory-bot/0.1",
+                "Accept-Language": "ja,en-US;q=0.8,en;q=0.6",
+            },
+        )
+        resp.raise_for_status()
+    except requests.RequestException:
+        return None
+
+    return best_tabelog_candidate(resp.text, name=name, area=area)
+
+
+def find_tabelog_url_by_web_search(name: str, area: str | None = None) -> str | None:
+    """搜尋引擎備援：站內搜尋找不到時才使用。"""
+
+    query = f"site:tabelog.com {tabelog_search_query(name, area)}".strip()
+    try:
+        resp = requests.get(
+            "https://duckduckgo.com/html/",
+            params={"q": query},
+            timeout=8,
+            headers={"User-Agent": "Mozilla/5.0 restaurant-memory-bot/0.1"},
+        )
+        resp.raise_for_status()
+    except requests.RequestException:
+        return None
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for anchor in soup.find_all("a", href=True):
+        candidate = extract_tabelog_result_url(str(anchor["href"]))
+        if candidate:
+            return candidate
+    return None
+
+
+def tabelog_search_query(name: str, area: str | None = None) -> str:
+    """組合食べログ搜尋關鍵字，避免店名和地區重複。"""
+
+    clean_name = cleanup_place_name(name) or name
+    clean_area = cleanup_place_name(area or "") or ""
+    if clean_area and normalize_match_text(clean_area) not in normalize_match_text(clean_name):
+        return f"{clean_name} {clean_area}".strip()
+    return clean_name.strip()
+
+
+def best_tabelog_candidate(html: str, *, name: str, area: str | None) -> str | None:
+    """從食べログ搜尋結果 HTML 中挑最像目標店家的 URL。"""
+
+    soup = BeautifulSoup(html, "html.parser")
+    scored_candidates: list[tuple[float, str]] = []
+    for anchor in soup.find_all("a", href=True):
+        candidate = extract_tabelog_result_url(str(anchor["href"]))
+        if not candidate:
+            continue
+        text = anchor.get_text(" ", strip=True)
+        score = tabelog_candidate_score(text, name=name, area=area)
+        scored_candidates.append((score, candidate))
+
+    if not scored_candidates:
+        return None
+    scored_candidates.sort(key=lambda item: item[0], reverse=True)
+    best_score, best_url = scored_candidates[0]
+    return best_url if best_score >= 0.35 else None
+
+
+def tabelog_candidate_score(candidate_text: str, *, name: str, area: str | None) -> float:
+    """用簡單相似度幫食べログ搜尋結果排序。
+
+    搜尋結果的 HTML class 名稱容易變動，所以不要依賴特定 CSS class。
+    只用連結文字和目標店名/地區做粗略排序，夠穩也好維護。
+    """
+
+    candidate = normalize_match_text(candidate_text)
+    target_name = normalize_match_text(name)
+    target_area = normalize_match_text(area or "")
+    if not candidate or not target_name:
+        return 0.0
+
+    score = SequenceMatcher(None, candidate, target_name).ratio()
+    if target_name in candidate:
+        score += 0.5
+    if target_area and target_area in candidate:
+        score += 0.15
+    return score
+
+
+def normalize_match_text(value: str) -> str:
+    """比對搜尋結果時用的輕量正規化。"""
+
+    text = cleanup_place_name(value) or ""
+    return re.sub(r"[\s　・･|｜/／\\()（）【】\[\]-]+", "", text).casefold()
+
+
+def extract_tabelog_result_url(url: str) -> str | None:
+    """從搜尋結果連結中取出食べログ店家 URL。"""
+
+    parsed = urlparse(url)
+    if parsed.netloc.endswith("duckduckgo.com"):
+        redirected = parse_qs(parsed.query).get("uddg")
+        if redirected:
+            url = redirected[0]
+            parsed = urlparse(url)
+
+    if "tabelog.com" not in parsed.netloc:
+        return None
+    if any(skip in parsed.path for skip in ("/rstLst/", "/help/", "/sitemap/")):
+        return None
+    if not re.search(r"/[A-Z]\d{4,}/[A-Z]\d{6,}/\d+/?", parsed.path):
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
 
 
 def google_maps_search_url(name: str, area: str | None = None) -> str:
@@ -115,12 +324,16 @@ def extract_restaurant(
 
     combined = "\n".join(all_text)
     tabelog_url = find_tabelog_url(combined)
+    google_maps_url = find_google_maps_url(combined)
+    google_maps_place_name = place_name_from_google_maps_url(google_maps_url)
     tabelog_title = fetch_tabelog_title(tabelog_url)
 
     prompt = {
         "messages": plain_messages,
         "tabelog_url": tabelog_url,
         "tabelog_title": tabelog_title,
+        "google_maps_url": google_maps_url,
+        "google_maps_place_name": google_maps_place_name,
         "rule": "Extract restaurant information only. Do not judge whether the restaurant is good or recommended. If a restaurant name or Tabelog title is available, return it.",
     }
 
@@ -150,9 +363,13 @@ def extract_restaurant(
     raw = response.choices[0].message.content or "{}"
     data = json.loads(raw)
     name = _clean_optional(data.get("name"))
+    if not name:
+        name = google_maps_place_name
     area = _clean_optional(data.get("area"))
     category = str(data.get("category") or "未分類").strip()
-    google_url = google_maps_search_url(name, area) if name else None
+    if not tabelog_url:
+        tabelog_url = find_tabelog_url_by_search(name, area)
+    google_url = google_maps_url or (google_maps_search_url(name, area) if name else None)
 
     return ExtractionResult(
         name=name,

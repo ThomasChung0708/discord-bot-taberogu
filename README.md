@@ -9,10 +9,13 @@
 - 只要能找到餐廳名稱或食べログ資訊，就會存進 SQLite；評論可以之後手動追加。
 - 對指定評論按右鍵或長按，選「應用程式」→「保存為餐廳評論」：選擇餐廳後，直接把那一則訊息追加成評論。
 - `/add_comment`：指定餐廳與開始/結束訊息連結，把那段 Discord 原文追加成餐廳評論。
+- `/edit_restaurant`：用餐廳 ID 編輯店名、分類、地區、連結、評論、關鍵字。
+- `/delete_restaurant`：用餐廳 ID 刪除錯誤餐廳，必須把 `confirm` 設成 `True` 才會刪除。
 - `/find_restaurant 拉麵`：用關鍵字查詢，出現餐廳選單。
 - 選餐廳後會顯示食べログ網址、Google Maps 連結、當時 Discord 的評論。
 - `/export_map_csv`：匯出 CSV，可匯入 Google My Maps 或 Google Sheets。
 - `/list_restaurant`：列出目前已儲存的餐廳與ID
+- 如果訊息裡是 Google Maps 連結，bot 會嘗試從網址解析店名，再反查食べログ店家網址。
  
 
 ## 設定
@@ -62,6 +65,30 @@ Discord Developer Portal 裡需要開：
 
 如果關鍵字找到多間餐廳，bot 會列出餐廳 ID。下一次把 `restaurant` 改成那個 ID 即可。
 
+## 編輯與刪除餐廳
+
+編輯餐廳時，只需要填想修改的欄位，留空的欄位會保持原本資料。
+
+```text
+/edit_restaurant restaurant_id:1 area:秋葉原 category:燒肉
+```
+
+刪除餐廳時，為了避免手滑，必須把 `confirm` 設成 `True`：
+
+```text
+/delete_restaurant restaurant_id:1 confirm:True
+```
+
+## Google Maps 反查食べログ
+
+保存餐廳資訊時，如果訊息裡沒有食べログ連結、但有 Google Maps 連結，bot 會嘗試：
+
+1. 從 Google Maps URL 解析店名。
+2. 用店名與地區搜尋食べログ。
+3. 找到像店家頁的結果後，存入 `tabelog_url`。
+
+這不是 Google 或食べログ官方 API，所以可能會有找不到或找到錯誤候選的情況。找不到時仍會保存餐廳基本資料，之後可以用 `/edit_restaurant` 或管理後台補上正確食べログ網址。
+
 ## 關於共享地圖
 
 目前每筆資料會自動產生 Google Maps 搜尋連結，也可以用 `/export_map_csv` 匯出後匯入 Google My Maps。真正直接寫入 Google My Maps 沒有穩定官方 API，建議下一步做其中一種：
@@ -90,3 +117,47 @@ GOOGLE_SHEETS_WORKSHEET=restaurants
 
 6. Discord 輸入 `/sync_google_sheet`。
 7. 到 Google My Maps 匯入該 Google Sheet，選 `name`、`area` 或 `google_maps_url` 作為定位資料。
+
+## 管理後台
+
+`admin_app.py` 是一個簡單的網頁後台，會讀取同一份 `restaurants.sqlite3`。
+
+可以做的事：
+
+- 查看所有餐廳
+- 搜尋餐廳
+- 用地區和分類篩選
+- 編輯店名、分類、地區、連結、關鍵字、評論
+- 刪除錯誤餐廳
+- 追加評論
+- 從 Google Sheet 匯入餐廳到 SQLite
+- 同步 Google Sheet
+
+本機啟動：
+
+Windows 可以直接雙擊：
+
+```text
+start_admin.bat
+```
+
+它會開啟後台服務並自動打開瀏覽器。使用後台時請保持那個黑色視窗開著，關掉視窗後後台就會停止。
+
+或手動輸入：
+
+```bash
+uvicorn admin_app:app --host 127.0.0.1 --port 8000
+```
+
+然後打開：
+
+```text
+http://127.0.0.1:8000
+```
+
+如果在 VM 上使用，建議先只綁 `127.0.0.1`，再用 SSH port forwarding 開啟，避免後台直接暴露在網路上。
+
+注意同步方向：
+
+- 「從 Google Sheet 匯入」：Google Sheet → SQLite，適合你在 Sheet 手動新增很多資料後使用。
+- 「DB 同步到 Sheet」：SQLite → Google Sheet，會用目前資料庫內容覆蓋 Sheet。

@@ -94,6 +94,47 @@ def sync_restaurants_to_sheet(
     return len(restaurants)
 
 
+def read_restaurants_from_sheet(
+    *,
+    spreadsheet_id: str,
+    credentials_path: Path,
+    worksheet_name: str = "restaurants",
+) -> list[dict[str, str]]:
+    """從 Google Sheet 讀回餐廳資料。
+
+    Sheet 第一列必須是欄位名稱，例如 id/name/category/area。
+    回傳時會把每一列轉成 dict，讓 admin_app.py 可以再寫回 SQLite。
+    """
+
+    credentials = Credentials.from_service_account_file(
+        str(credentials_path),
+        scopes=SCOPES,
+    )
+    service = build("sheets", "v4", credentials=credentials)
+    sheet = service.spreadsheets()
+    ensure_worksheet(sheet, spreadsheet_id, worksheet_name)
+
+    result = sheet.values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{worksheet_name}!A:H",
+    ).execute()
+    values = result.get("values", [])
+    if not values:
+        return []
+
+    headers = [str(header).strip() for header in values[0]]
+    rows: list[dict[str, str]] = []
+    for value_row in values[1:]:
+        if not any(str(value).strip() for value in value_row):
+            continue
+        row = {
+            header: str(value_row[index]).strip() if index < len(value_row) else ""
+            for index, header in enumerate(headers)
+        }
+        rows.append(row)
+    return rows
+
+
 def ensure_worksheet(sheet_resource, spreadsheet_id: str, worksheet_name: str) -> None:
     """確認指定 worksheet 存在；沒有就自動建立。"""
 

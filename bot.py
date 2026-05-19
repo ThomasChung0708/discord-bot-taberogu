@@ -552,6 +552,96 @@ async def list_restaurants(interaction: discord.Interaction) -> None:
     )
 
 
+@client.tree.command(name="edit_restaurant", description="編輯已儲存餐廳資料")
+@app_commands.describe(
+    restaurant_id="要編輯的餐廳 ID",
+    name="新的店名，留空代表不修改",
+    category="新的分類，留空代表不修改",
+    area="新的地區，留空代表不修改",
+    tabelog_url="新的食べログ URL，留空代表不修改",
+    google_maps_url="新的 Google Maps URL，留空代表不修改",
+    comments="新的評論內容，留空代表不修改",
+    keywords="新的關鍵字，用逗號分隔，留空代表不修改",
+)
+async def edit_restaurant(
+    interaction: discord.Interaction,
+    restaurant_id: int,
+    name: str | None = None,
+    category: str | None = None,
+    area: str | None = None,
+    tabelog_url: str | None = None,
+    google_maps_url: str | None = None,
+    comments: str | None = None,
+    keywords: str | None = None,
+) -> None:
+    """Discord slash command：編輯餐廳。
+
+    Discord 的 slash command 不適合一次放很長的表單，
+    所以這裡採用「只填想改的欄位」的方式。
+    """
+
+    restaurant = db.get(restaurant_id)
+    if not restaurant:
+        await interaction.response.send_message(
+            f"找不到 ID {restaurant_id} 的餐廳。",
+            ephemeral=True,
+        )
+        return
+
+    updated = db.update_restaurant(
+        restaurant_id=restaurant_id,
+        name=name if name is not None else restaurant.name,
+        category=category if category is not None else restaurant.category,
+        area=area if area is not None else restaurant.area,
+        tabelog_url=tabelog_url if tabelog_url is not None else restaurant.tabelog_url,
+        google_maps_url=google_maps_url if google_maps_url is not None else restaurant.google_maps_url,
+        comments=comments if comments is not None else restaurant.comments,
+        keywords=parse_keywords(keywords) if keywords is not None else restaurant.keywords,
+    )
+    await interaction.response.send_message(
+        "已更新餐廳資料。",
+        embed=restaurant_embed(updated) if updated else None,
+        ephemeral=False,
+    )
+
+
+@client.tree.command(name="delete_restaurant", description="刪除已儲存餐廳")
+@app_commands.describe(
+    restaurant_id="要刪除的餐廳 ID",
+    confirm="安全確認：請選 True 才會真的刪除",
+)
+async def delete_restaurant(
+    interaction: discord.Interaction,
+    restaurant_id: int,
+    confirm: bool = False,
+) -> None:
+    """Discord slash command：刪除餐廳。
+
+    為了避免手滑，必須把 confirm 設成 True 才會真的刪除。
+    """
+
+    restaurant = db.get(restaurant_id)
+    if not restaurant:
+        await interaction.response.send_message(
+            f"找不到 ID {restaurant_id} 的餐廳。",
+            ephemeral=True,
+        )
+        return
+    if not confirm:
+        await interaction.response.send_message(
+            f"你準備刪除 ID {restaurant.id}: {restaurant.name}。"
+            "如果確定要刪除，請把 confirm 設成 True 再執行一次。",
+            ephemeral=True,
+        )
+        return
+
+    db.delete_restaurant(restaurant_id)
+    await interaction.response.send_message(
+        f"已刪除 ID {restaurant.id}: {restaurant.name}。",
+        ephemeral=False,
+    )
+
+
 @client.tree.command(name="add_comment", description="把指定訊息區間追加成某間餐廳的評論")
 @app_commands.describe(
     restaurant="餐廳 ID 或關鍵字。若關鍵字找到多筆，請改用餐廳 ID",
@@ -786,6 +876,15 @@ def parse_message_id(value: str) -> int | None:
 
     matches = MESSAGE_ID_RE.findall(value)
     return int(matches[-1]) if matches else None
+
+
+def parse_keywords(value: str | None) -> list[str]:
+    """把逗號、日文頓號、換行分隔的關鍵字轉成 list。"""
+
+    if not value:
+        return []
+    text = value.replace("、", ",").replace("\n", ",")
+    return [part.strip() for part in text.split(",") if part.strip()]
 
 
 async def messages_between(

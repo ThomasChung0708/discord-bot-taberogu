@@ -125,7 +125,7 @@ class RestaurantDB:
         如果 name + tabelog_url 已存在，INSERT OR REPLACE 會保留原本 id。
         """
 
-        clean_keywords = sorted({k.strip().lower() for k in keywords if k.strip()})
+        clean_keywords = clean_keyword_list(keywords, name=name, category=category, area=area)
         with self.session() as conn:
             cur = conn.execute(
                 """
@@ -232,6 +232,158 @@ class RestaurantDB:
             )
         return self.get(restaurant_id)
 
+    def update_restaurant(
+        self,
+        *,
+        restaurant_id: int,
+        name: str,
+        category: str,
+        area: str | None,
+        tabelog_url: str | None,
+        google_maps_url: str | None,
+        comments: str,
+        keywords: Iterable[str],
+    ) -> Restaurant | None:
+        """更新後台表單送來的餐廳資料。
+
+        管理後台會直接編輯餐廳欄位，因此這裡集中處理空白清理與
+        keywords_json 的 JSON 轉換，避免 admin_app.py 裡混入 SQL 細節。
+        """
+
+        clean_keywords = clean_keyword_list(keywords, name=name, category=category, area=area)
+        with self.session() as conn:
+            cur = conn.execute(
+                """
+                UPDATE restaurants
+                SET name = ?,
+                    category = ?,
+                    area = ?,
+                    tabelog_url = ?,
+                    google_maps_url = ?,
+                    comments = ?,
+                    keywords_json = ?
+                WHERE id = ?
+                """,
+                (
+                    name.strip(),
+                    category.strip(),
+                    area.strip() if area and area.strip() else None,
+                    tabelog_url.strip() if tabelog_url and tabelog_url.strip() else None,
+                    google_maps_url.strip() if google_maps_url and google_maps_url.strip() else None,
+                    comments.strip(),
+                    json.dumps(clean_keywords, ensure_ascii=False),
+                    restaurant_id,
+                ),
+            )
+            if cur.rowcount == 0:
+                return None
+        return self.get(restaurant_id)
+
+    def import_restaurant(
+        self,
+        *,
+        restaurant_id: int | None,
+        name: str,
+        category: str,
+        area: str | None,
+        tabelog_url: str | None,
+        google_maps_url: str | None,
+        comments: str,
+        keywords: Iterable[str],
+        created_by: str = "Google Sheet",
+    ) -> int:
+        """從 Google Sheet 匯入一間餐廳。
+
+        和 add_restaurant 不同，這個方法允許保留 Sheet 裡的 id。
+        如果 id 已存在，就更新該筆；如果 id 不存在，就用 Sheet 的 id 建立。
+        這讓 Google Sheet 可以作為大量手動編輯後的回灌來源。
+        """
+
+        clean_keywords = clean_keyword_list(keywords, name=name, category=category, area=area)
+        with self.session() as conn:
+            if restaurant_id and self.get(restaurant_id):
+                conn.execute(
+                    """
+                    UPDATE restaurants
+                    SET name = ?,
+                        category = ?,
+                        area = ?,
+                        tabelog_url = ?,
+                        google_maps_url = ?,
+                        comments = ?,
+                        keywords_json = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        name.strip(),
+                        category.strip(),
+                        area.strip() if area and area.strip() else None,
+                        tabelog_url.strip() if tabelog_url and tabelog_url.strip() else None,
+                        google_maps_url.strip() if google_maps_url and google_maps_url.strip() else None,
+                        comments.strip(),
+                        json.dumps(clean_keywords, ensure_ascii=False),
+                        restaurant_id,
+                    ),
+                )
+                return restaurant_id
+
+            cur = conn.execute(
+                """
+                INSERT OR REPLACE INTO restaurants (
+                    id, name, category, area, tabelog_url, google_maps_url, comments,
+                    keywords_json, source_channel_id, source_message_id, created_by
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
+                """,
+                (
+                    restaurant_id,
+                    name.strip(),
+                    category.strip(),
+                    area.strip() if area and area.strip() else None,
+                    tabelog_url.strip() if tabelog_url and tabelog_url.strip() else None,
+                    google_maps_url.strip() if google_maps_url and google_maps_url.strip() else None,
+                    comments.strip(),
+                    json.dumps(clean_keywords, ensure_ascii=False),
+                    created_by,
+                ),
+            )
+            return int(restaurant_id or cur.lastrowid)
+
+    def delete_restaurant(self, restaurant_id: int) -> bool:
+        """刪除一間餐廳。管理後台刪錯資料時會用到。"""
+
+        with self.session() as conn:
+            cur = conn.execute("DELETE FROM restaurants WHERE id = ?", (restaurant_id,))
+            return cur.rowcount > 0
+
+    def areas(self) -> list[str]:
+        """取得目前所有地區，用於後台篩選選單。"""
+
+        with self.session() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT area
+                FROM restaurants
+                WHERE area IS NOT NULL AND trim(area) != ''
+                ORDER BY area
+                """
+            ).fetchall()
+        return [str(row["area"]) for row in rows]
+
+    def categories(self) -> list[str]:
+        """取得目前所有分類，用於後台篩選選單。"""
+
+        with self.session() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT category
+                FROM restaurants
+                WHERE trim(category) != ''
+                ORDER BY category
+                """
+            ).fetchall()
+        return [str(row["category"]) for row in rows]
+
     def cleanup_comment_placeholders(self) -> int:
         """清理舊資料中殘留的 comments 佔位文字。"""
 
@@ -325,6 +477,50 @@ def normalize_search_text(text: str) -> str:
 
     normalized = unicodedata.normalize("NFKC", text).casefold()
     return "".join(katakana_to_hiragana(char) for char in normalized)
+
+
+def clean_keyword_list(
+    keywords: Iterable[str],
+    *,
+    name: str | None = None,
+    category: str | None = None,
+    area: str | None = None,
+) -> list[str]:
+    """整理關鍵字，移除重複與被地區/分類涵蓋的項目。
+
+    例如 area 是「市ヶ谷」，keywords 裡又有「市ヶ谷」時只保留一次。
+    也會處理 カツ / かつ 這種日文正規化後相同的重複。
+    """
+
+    raw_parts: list[str] = []
+    for value in [category, area, *keywords]:
+        if not value:
+            continue
+        for part in str(value).replace("、", ",").replace("\n", ",").split(","):
+            text = part.strip()
+            if text:
+                raw_parts.append(text)
+
+    if name:
+        normalized_area = normalize_search_text(area or "")
+        for part in str(name).replace("、", ",").replace("\n", ",").split(","):
+            text = part.strip()
+            if not text:
+                continue
+            normalized_text = normalize_search_text(text)
+            if normalized_area and normalized_text == normalized_area:
+                continue
+            raw_parts.append(text)
+
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for part in raw_parts:
+        key = normalize_search_text(part)
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(part)
+    return cleaned
 
 
 def katakana_to_hiragana(char: str) -> str:
