@@ -11,6 +11,7 @@
 - `/add_comment`：指定餐廳與開始/結束訊息連結，把那段 Discord 原文追加成餐廳評論。
 - `/edit_restaurant`：用餐廳 ID 編輯店名、分類、地區、連結、評論、關鍵字。
 - `/delete_restaurant`：用餐廳 ID 刪除錯誤餐廳，必須把 `confirm` 設成 `True` 才會刪除。
+- `/backup_db`：把目前 VM 上的餐廳資料庫備份成 SQLite 檔案傳回 Discord。
 - `/find_restaurant 拉麵`：用關鍵字查詢，出現餐廳選單。
 - 選餐廳後會顯示食べログ網址、Google Maps 連結、當時 Discord 的評論。
 - `/export_map_csv`：匯出 CSV，可匯入 Google My Maps 或 Google Sheets。
@@ -81,6 +82,16 @@ Discord Developer Portal 裡需要開：
 ```text
 /delete_restaurant restaurant_id:1 confirm:True
 ```
+
+## 備份資料庫
+
+VM 上的 `restaurants.sqlite3` 是 bot 真正在使用的主資料庫。可以定期在 Discord 執行：
+
+```text
+/backup_db
+```
+
+bot 會把目前資料庫備份成 `.sqlite3` 檔案傳給執行指令的人。建議重要更新後下載保存一份。
 
 ## Google Maps 反查食べログ
 

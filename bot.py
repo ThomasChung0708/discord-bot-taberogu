@@ -15,9 +15,12 @@ extractor.py、sheets_sync.py 這些模組完成真正工作。
 """
 
 import csv
+import datetime as dt
 import io
 import os
 import re
+import sqlite3
+import tempfile
 from pathlib import Path
 
 import discord
@@ -760,6 +763,31 @@ async def sync_google_sheet(interaction: discord.Interaction) -> None:
     await sync_google_sheet_to_discord(interaction)
 
 
+@client.tree.command(name="backup_db", description="備份目前餐廳資料庫")
+async def backup_db(interaction: discord.Interaction) -> None:
+    """把目前 SQLite 資料庫備份成檔案傳回 Discord。
+
+    這個指令適合定期把 VM 上的主資料庫下載回本機保存。
+    使用 SQLite backup API，而不是直接複製檔案，避免 bot 正在寫入時拿到不完整檔案。
+    """
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    if not DB_PATH.exists():
+        await interaction.followup.send("找不到資料庫檔案，還沒有可備份的資料。", ephemeral=True)
+        return
+
+    backup_path = create_database_backup()
+    filename = f"restaurants_backup_{dt.datetime.now(dt.UTC).strftime('%Y%m%d_%H%M%S')}.sqlite3"
+    try:
+        await interaction.followup.send(
+            "這是目前餐廳資料庫備份檔。",
+            file=discord.File(str(backup_path), filename=filename),
+            ephemeral=True,
+        )
+    finally:
+        backup_path.unlink(missing_ok=True)
+
+
 async def sync_google_sheet_from_message(message: discord.Message) -> None:
     """@bot 更新地圖：從一般訊息觸發 Google Sheet 同步。"""
 
@@ -859,6 +887,22 @@ def sync_google_sheet_data() -> str:
         return "同步 Google Sheet 失敗。請確認 Sheet ID、service account 權限與 JSON 檔。"
 
     return f"已同步 {count} 筆餐廳到 Google Sheet。My Maps 讀取這張表後會看到最新資料。"
+
+
+def create_database_backup() -> Path:
+    """建立 SQLite 備份檔並回傳暫存路徑。"""
+
+    fd, temp_name = tempfile.mkstemp(prefix="restaurants_backup_", suffix=".sqlite3")
+    os.close(fd)
+    backup_path = Path(temp_name)
+    source = sqlite3.connect(DB_PATH)
+    destination = sqlite3.connect(backup_path)
+    try:
+        source.backup(destination)
+    finally:
+        destination.close()
+        source.close()
+    return backup_path
 
 
 def restaurant_embed(restaurant: Restaurant) -> discord.Embed:
