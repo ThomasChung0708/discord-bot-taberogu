@@ -30,7 +30,7 @@ from googleapiclient.errors import HttpError
 from openai import OpenAI
 
 from db import Restaurant, RestaurantDB
-from extractor import MessageSnippet, extract_restaurant
+from extractor import MessageSnippet, extract_restaurant, fetch_tabelog_price_info
 from sheets_sync import sync_restaurants_to_sheet
 
 
@@ -427,6 +427,13 @@ async def save_extracted_restaurant(
         source_channel_id=interaction.channel_id or 0,
         source_message_id=source_message_id,
         created_by=interaction.user.display_name,
+        lunch_budget_text=result.lunch_budget_text,
+        lunch_budget_min=result.lunch_budget_min,
+        lunch_budget_max=result.lunch_budget_max,
+        dinner_budget_text=result.dinner_budget_text,
+        dinner_budget_min=result.dinner_budget_min,
+        dinner_budget_max=result.dinner_budget_max,
+        price_updated_at=result.price_updated_at,
     )
 
     restaurant = db.get(restaurant_id)
@@ -788,6 +795,57 @@ async def backup_db(interaction: discord.Interaction) -> None:
         backup_path.unlink(missing_ok=True)
 
 
+@client.tree.command(name="enrich_prices", description="慢慢補抓食べログ午餐/晚餐價格")
+@app_commands.describe(limit="這次最多補幾間，建議 5。最大 20")
+async def enrich_prices(interaction: discord.Interaction, limit: int = 5) -> None:
+    """從已保存的食べログ URL 補抓價格資訊。"""
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    safe_limit = min(max(limit, 1), 20)
+    restaurants = db.restaurants_missing_prices(limit=safe_limit)
+    if not restaurants:
+        await interaction.followup.send(
+            "目前沒有需要補價格的餐廳，或餐廳沒有食べログ網址。",
+            ephemeral=True,
+        )
+        return
+
+    updated = []
+    not_found = []
+    for restaurant in restaurants:
+        price = fetch_tabelog_price_info(restaurant.tabelog_url)
+        if not price.price_updated_at:
+            not_found.append(restaurant.name)
+            continue
+        db.update_price_info(
+            restaurant_id=restaurant.id,
+            lunch_budget_text=price.lunch_budget_text,
+            lunch_budget_min=price.lunch_budget_min,
+            lunch_budget_max=price.lunch_budget_max,
+            dinner_budget_text=price.dinner_budget_text,
+            dinner_budget_min=price.dinner_budget_min,
+            dinner_budget_max=price.dinner_budget_max,
+            price_updated_at=price.price_updated_at,
+        )
+        updated.append(
+            f"ID {restaurant.id}: {restaurant.name} "
+            f"午餐 {price.lunch_budget_text or '-'} / 晚餐 {price.dinner_budget_text or '-'}"
+        )
+
+    lines = [
+        f"這次檢查 {len(restaurants)} 間。",
+        f"成功更新：{len(updated)}",
+        f"找不到價格：{len(not_found)}",
+    ]
+    if updated:
+        lines.append("\n更新成功：")
+        lines.extend(updated[:10])
+    if not_found:
+        lines.append("\n找不到價格：")
+        lines.extend(not_found[:10])
+    await interaction.followup.send("\n".join(lines), ephemeral=True)
+
+
 async def sync_google_sheet_from_message(message: discord.Message) -> None:
     """@bot 更新地圖：從一般訊息觸發 Google Sheet 同步。"""
 
@@ -921,6 +979,13 @@ def restaurant_embed(restaurant: Restaurant) -> discord.Embed:
         embed.add_field(name="食べログ", value=restaurant.tabelog_url, inline=False)
     if restaurant.google_maps_url:
         embed.add_field(name="Google Maps", value=restaurant.google_maps_url, inline=False)
+    price_lines = []
+    if restaurant.lunch_budget_text:
+        price_lines.append(f"午餐：{restaurant.lunch_budget_text}")
+    if restaurant.dinner_budget_text:
+        price_lines.append(f"晚餐：{restaurant.dinner_budget_text}")
+    if price_lines:
+        embed.add_field(name="價格", value="\n".join(price_lines), inline=False)
     if restaurant.keywords:
         embed.add_field(name="關鍵字", value=", ".join(restaurant.keywords), inline=False)
     return embed

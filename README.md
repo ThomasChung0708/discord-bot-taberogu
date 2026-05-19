@@ -12,6 +12,7 @@
 - `/edit_restaurant`：用餐廳 ID 編輯店名、分類、地區、連結、評論、關鍵字。
 - `/delete_restaurant`：用餐廳 ID 刪除錯誤餐廳，必須把 `confirm` 設成 `True` 才會刪除。
 - `/backup_db`：把目前 VM 上的餐廳資料庫備份成 SQLite 檔案傳回 Discord。
+- `/enrich_prices`：從既有食べログ網址慢慢補抓午餐/晚餐價格。
 - `/find_restaurant 拉麵`：用關鍵字查詢，出現餐廳選單。
 - 選餐廳後會顯示食べログ網址、Google Maps 連結、當時 Discord 的評論。
 - `/export_map_csv`：匯出 CSV，可匯入 Google My Maps 或 Google Sheets。
@@ -92,6 +93,16 @@ VM 上的 `restaurants.sqlite3` 是 bot 真正在使用的主資料庫。可以�
 ```
 
 bot 會把目前資料庫備份成 `.sqlite3` 檔案傳給執行指令的人。建議重要更新後下載保存一份。
+
+## 補抓食べログ價格
+
+如果餐廳已經有食べログ網址，可以慢慢把午餐/晚餐價格補進 DB：
+
+```text
+/enrich_prices limit:5
+```
+
+建議一次補 5 間左右，避免一次對食べログ發太多請求。之後保存新餐廳時，如果有食べログ網址，bot 也會嘗試自動抓價格。
 
 ## Google Maps 反查食べログ
 

@@ -12,6 +12,7 @@ bot.py 會把 Discord 訊息整理成 MessageSnippet，交給這個模組。
 import json
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from difflib import SequenceMatcher
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
@@ -48,6 +49,26 @@ class ExtractionResult:
     comments: str
     keywords: list[str]
     reason: str
+    lunch_budget_text: str | None = None
+    lunch_budget_min: int | None = None
+    lunch_budget_max: int | None = None
+    dinner_budget_text: str | None = None
+    dinner_budget_min: int | None = None
+    dinner_budget_max: int | None = None
+    price_updated_at: str | None = None
+
+
+@dataclass(frozen=True)
+class PriceInfo:
+    """食べログ頁面抓到的價格資訊。"""
+
+    lunch_budget_text: str | None = None
+    lunch_budget_min: int | None = None
+    lunch_budget_max: int | None = None
+    dinner_budget_text: str | None = None
+    dinner_budget_min: int | None = None
+    dinner_budget_max: int | None = None
+    price_updated_at: str | None = None
 
 
 def find_tabelog_url(text: str) -> str | None:
@@ -90,6 +111,94 @@ def fetch_tabelog_title(url: str | None) -> str | None:
     if soup.title and soup.title.string:
         return soup.title.string.strip()
     return None
+
+
+def fetch_tabelog_price_info(url: str | None) -> PriceInfo:
+    """從食べログ店家頁抓午餐/晚餐預算。
+
+    食べログ頁面可能改版或擋請求，所以這個函式採取 best effort：
+    找不到價格就回傳空 PriceInfo，不讓保存餐廳失敗。
+    """
+
+    if not url:
+        return PriceInfo()
+    try:
+        resp = requests.get(
+            url,
+            timeout=6,
+            headers={
+                "User-Agent": "Mozilla/5.0 restaurant-memory-bot/0.1",
+                "Accept-Language": "ja,en-US;q=0.8,en;q=0.6",
+            },
+        )
+        resp.raise_for_status()
+    except requests.RequestException:
+        return PriceInfo()
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    page_text = soup.get_text("\n", strip=True)
+    dinner_text = find_price_near_label(page_text, ["夜", "ディナー", "Dinner"])
+    lunch_text = find_price_near_label(page_text, ["昼", "ランチ", "Lunch"])
+
+    if not dinner_text or not lunch_text:
+        prices = PRICE_RE.findall(page_text)
+        if prices:
+            dinner_text = dinner_text or prices[0]
+        if len(prices) > 1:
+            lunch_text = lunch_text or prices[1]
+
+    lunch_min, lunch_max = parse_budget_range(lunch_text)
+    dinner_min, dinner_max = parse_budget_range(dinner_text)
+    updated_at = None
+    if lunch_text or dinner_text:
+        updated_at = datetime.now(UTC).isoformat(timespec="seconds")
+    return PriceInfo(
+        lunch_budget_text=lunch_text,
+        lunch_budget_min=lunch_min,
+        lunch_budget_max=lunch_max,
+        dinner_budget_text=dinner_text,
+        dinner_budget_min=dinner_min,
+        dinner_budget_max=dinner_max,
+        price_updated_at=updated_at,
+    )
+
+
+PRICE_RE = re.compile(r"￥\s*[\d,]+\s*未満|￥\s*[\d,]+(?:\s*[～〜-]\s*￥?\s*[\d,]+)?")
+
+
+def find_price_near_label(text: str, labels: list[str]) -> str | None:
+    """在頁面文字中找靠近指定標籤的價格。"""
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    for index, line in enumerate(lines):
+        if not any(label in line for label in labels):
+            continue
+        window = "\n".join(lines[index : index + 8])
+        match = PRICE_RE.search(window)
+        if match:
+            return normalize_price_text(match.group(0))
+    return None
+
+
+def parse_budget_range(text: str | None) -> tuple[int | None, int | None]:
+    """把 '￥1,000～￥1,999' 解析成 (1000, 1999)。"""
+
+    if not text:
+        return None, None
+    numbers = [int(value.replace(",", "")) for value in re.findall(r"\d[\d,]*", text)]
+    if "未満" in text and numbers:
+        return 0, numbers[0] - 1
+    if len(numbers) >= 2:
+        return numbers[0], numbers[1]
+    if len(numbers) == 1:
+        return numbers[0], None
+    return None, None
+
+
+def normalize_price_text(text: str) -> str:
+    """統一價格文字格式。"""
+
+    return re.sub(r"\s+", "", text).replace("〜", "～")
 
 
 def resolve_google_maps_url(url: str | None) -> str | None:
@@ -370,6 +479,7 @@ def extract_restaurant(
     if not tabelog_url:
         tabelog_url = find_tabelog_url_by_search(name, area)
     google_url = google_maps_url or (google_maps_search_url(name, area) if name else None)
+    price_info = fetch_tabelog_price_info(tabelog_url)
 
     return ExtractionResult(
         name=name,
@@ -380,6 +490,13 @@ def extract_restaurant(
         comments=str(data.get("comments") or "").strip(),
         keywords=[str(k).strip() for k in data.get("keywords", []) if str(k).strip()],
         reason=str(data.get("reason") or "").strip(),
+        lunch_budget_text=price_info.lunch_budget_text,
+        lunch_budget_min=price_info.lunch_budget_min,
+        lunch_budget_max=price_info.lunch_budget_max,
+        dinner_budget_text=price_info.dinner_budget_text,
+        dinner_budget_min=price_info.dinner_budget_min,
+        dinner_budget_max=price_info.dinner_budget_max,
+        price_updated_at=price_info.price_updated_at,
     )
 
 

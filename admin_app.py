@@ -84,6 +84,13 @@ def restaurant_to_dict(restaurant: Restaurant) -> dict:
         "source_message_id": restaurant.source_message_id,
         "created_by": restaurant.created_by,
         "created_at": restaurant.created_at,
+        "lunch_budget_text": restaurant.lunch_budget_text,
+        "lunch_budget_min": restaurant.lunch_budget_min,
+        "lunch_budget_max": restaurant.lunch_budget_max,
+        "dinner_budget_text": restaurant.dinner_budget_text,
+        "dinner_budget_min": restaurant.dinner_budget_min,
+        "dinner_budget_max": restaurant.dinner_budget_max,
+        "price_updated_at": restaurant.price_updated_at,
     }
 
 
@@ -265,6 +272,8 @@ def import_sheet(_: None = Depends(require_admin)) -> dict:
             tabelog_url=row.get("tabelog_url", "").strip() or None,
             comments=row.get("comments", "").strip(),
             keywords=keywords or [name, category],
+            lunch_budget_text=row.get("lunch_budget", "").strip() or None,
+            dinner_budget_text=row.get("dinner_budget", "").strip() or None,
         )
         imported += 1
     return {"ok": True, "imported": imported, "skipped": skipped}
@@ -460,6 +469,7 @@ PUBLIC_HTML = r"""
         card.innerHTML = `
           <h2>${escapeHtml(restaurant.name)}</h2>
           <div class="meta">ID ${restaurant.id} / ${escapeHtml(restaurant.category)} ${escapeHtml(restaurant.area || "")}</div>
+          <div class="meta">${priceText(restaurant)}</div>
           <div class="comments">${escapeHtml(shortText(restaurant.comments || ""))}</div>
           <div class="links">
             ${restaurant.google_maps_url ? `<a target="_blank" rel="noreferrer" href="${escapeAttr(restaurant.google_maps_url)}">Google Maps</a>` : ""}
@@ -472,6 +482,13 @@ PUBLIC_HTML = r"""
 
     function shortText(value) {
       return value.length > 120 ? `${value.slice(0, 120)}...` : value;
+    }
+
+    function priceText(restaurant) {
+      const parts = [];
+      if (restaurant.lunch_budget_text) parts.push(`午餐 ${restaurant.lunch_budget_text}`);
+      if (restaurant.dinner_budget_text) parts.push(`晚餐 ${restaurant.dinner_budget_text}`);
+      return escapeHtml(parts.join(" / "));
     }
 
     function escapeHtml(value) {
@@ -816,6 +833,12 @@ ADMIN_HTML = r"""
           <label>關鍵字，用逗號分隔
             <input id="keywordsInput">
           </label>
+          <label>午餐價格
+            <input id="lunchBudget" disabled>
+          </label>
+          <label>晚餐價格
+            <input id="dinnerBudget" disabled>
+          </label>
           <label class="full">食べログ URL
             <input id="tabelogUrl">
           </label>
@@ -977,6 +1000,8 @@ ADMIN_HTML = r"""
       $("categoryInput").value = restaurant.category || "";
       $("areaInput").value = restaurant.area || "";
       $("keywordsInput").value = (restaurant.keywords || []).join(", ");
+      $("lunchBudget").value = restaurant.lunch_budget_text || "";
+      $("dinnerBudget").value = restaurant.dinner_budget_text || "";
       $("tabelogUrl").value = restaurant.tabelog_url || "";
       $("googleMapsUrl").value = restaurant.google_maps_url || "";
       $("comments").value = restaurant.comments || "";

@@ -42,6 +42,13 @@ class Restaurant:
     source_message_id: int | None
     created_by: str
     created_at: str
+    lunch_budget_text: str | None = None
+    lunch_budget_min: int | None = None
+    lunch_budget_max: int | None = None
+    dinner_budget_text: str | None = None
+    dinner_budget_min: int | None = None
+    dinner_budget_max: int | None = None
+    price_updated_at: str | None = None
 
 
 class RestaurantDB:
@@ -97,13 +104,34 @@ class RestaurantDB:
                     source_message_id INTEGER,
                     created_by TEXT NOT NULL,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    lunch_budget_text TEXT,
+                    lunch_budget_min INTEGER,
+                    lunch_budget_max INTEGER,
+                    dinner_budget_text TEXT,
+                    dinner_budget_min INTEGER,
+                    dinner_budget_max INTEGER,
+                    price_updated_at TEXT,
                     UNIQUE(name, tabelog_url)
                 )
                 """
             )
+            self._ensure_column(conn, "lunch_budget_text", "TEXT")
+            self._ensure_column(conn, "lunch_budget_min", "INTEGER")
+            self._ensure_column(conn, "lunch_budget_max", "INTEGER")
+            self._ensure_column(conn, "dinner_budget_text", "TEXT")
+            self._ensure_column(conn, "dinner_budget_min", "INTEGER")
+            self._ensure_column(conn, "dinner_budget_max", "INTEGER")
+            self._ensure_column(conn, "price_updated_at", "TEXT")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_restaurants_category ON restaurants(category)"
             )
+
+    def _ensure_column(self, conn: sqlite3.Connection, name: str, definition: str) -> None:
+        """舊 DB 升級用：缺欄位時自動 ALTER TABLE 加上。"""
+
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(restaurants)").fetchall()}
+        if name not in columns:
+            conn.execute(f"ALTER TABLE restaurants ADD COLUMN {name} {definition}")
 
     def add_restaurant(
         self,
@@ -118,6 +146,13 @@ class RestaurantDB:
         source_channel_id: int,
         source_message_id: int | None,
         created_by: str,
+        lunch_budget_text: str | None = None,
+        lunch_budget_min: int | None = None,
+        lunch_budget_max: int | None = None,
+        dinner_budget_text: str | None = None,
+        dinner_budget_min: int | None = None,
+        dinner_budget_max: int | None = None,
+        price_updated_at: str | None = None,
     ) -> int:
         """新增或覆蓋同一家餐廳。
 
@@ -131,11 +166,13 @@ class RestaurantDB:
                 """
                 INSERT OR REPLACE INTO restaurants (
                     id, name, category, area, tabelog_url, google_maps_url, comments,
-                    keywords_json, source_channel_id, source_message_id, created_by
+                    keywords_json, source_channel_id, source_message_id, created_by,
+                    lunch_budget_text, lunch_budget_min, lunch_budget_max,
+                    dinner_budget_text, dinner_budget_min, dinner_budget_max, price_updated_at
                 )
                 VALUES (
                     (SELECT id FROM restaurants WHERE name = ? AND COALESCE(tabelog_url, '') = COALESCE(?, '')),
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -151,6 +188,13 @@ class RestaurantDB:
                     source_channel_id,
                     source_message_id,
                     created_by,
+                    lunch_budget_text,
+                    lunch_budget_min,
+                    lunch_budget_max,
+                    dinner_budget_text,
+                    dinner_budget_min,
+                    dinner_budget_max,
+                    price_updated_at,
                 ),
             )
             return int(cur.lastrowid or conn.execute("SELECT last_insert_rowid()").fetchone()[0])
@@ -291,6 +335,13 @@ class RestaurantDB:
         comments: str,
         keywords: Iterable[str],
         created_by: str = "Google Sheet",
+        lunch_budget_text: str | None = None,
+        lunch_budget_min: int | None = None,
+        lunch_budget_max: int | None = None,
+        dinner_budget_text: str | None = None,
+        dinner_budget_min: int | None = None,
+        dinner_budget_max: int | None = None,
+        price_updated_at: str | None = None,
     ) -> int:
         """從 Google Sheet 匯入一間餐廳。
 
@@ -311,7 +362,14 @@ class RestaurantDB:
                         tabelog_url = ?,
                         google_maps_url = ?,
                         comments = ?,
-                        keywords_json = ?
+                        keywords_json = ?,
+                        lunch_budget_text = ?,
+                        lunch_budget_min = ?,
+                        lunch_budget_max = ?,
+                        dinner_budget_text = ?,
+                        dinner_budget_min = ?,
+                        dinner_budget_max = ?,
+                        price_updated_at = ?
                     WHERE id = ?
                     """,
                     (
@@ -322,6 +380,13 @@ class RestaurantDB:
                         google_maps_url.strip() if google_maps_url and google_maps_url.strip() else None,
                         comments.strip(),
                         json.dumps(clean_keywords, ensure_ascii=False),
+                        lunch_budget_text,
+                        lunch_budget_min,
+                        lunch_budget_max,
+                        dinner_budget_text,
+                        dinner_budget_min,
+                        dinner_budget_max,
+                        price_updated_at,
                         restaurant_id,
                     ),
                 )
@@ -331,9 +396,11 @@ class RestaurantDB:
                 """
                 INSERT OR REPLACE INTO restaurants (
                     id, name, category, area, tabelog_url, google_maps_url, comments,
-                    keywords_json, source_channel_id, source_message_id, created_by
+                    keywords_json, source_channel_id, source_message_id, created_by,
+                    lunch_budget_text, lunch_budget_min, lunch_budget_max,
+                    dinner_budget_text, dinner_budget_min, dinner_budget_max, price_updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     restaurant_id,
@@ -345,9 +412,75 @@ class RestaurantDB:
                     comments.strip(),
                     json.dumps(clean_keywords, ensure_ascii=False),
                     created_by,
+                    lunch_budget_text,
+                    lunch_budget_min,
+                    lunch_budget_max,
+                    dinner_budget_text,
+                    dinner_budget_min,
+                    dinner_budget_max,
+                    price_updated_at,
                 ),
             )
             return int(restaurant_id or cur.lastrowid)
+
+    def update_price_info(
+        self,
+        *,
+        restaurant_id: int,
+        lunch_budget_text: str | None,
+        lunch_budget_min: int | None,
+        lunch_budget_max: int | None,
+        dinner_budget_text: str | None,
+        dinner_budget_min: int | None,
+        dinner_budget_max: int | None,
+        price_updated_at: str | None,
+    ) -> Restaurant | None:
+        """更新一間餐廳的食べログ價格資訊。"""
+
+        with self.session() as conn:
+            cur = conn.execute(
+                """
+                UPDATE restaurants
+                SET lunch_budget_text = ?,
+                    lunch_budget_min = ?,
+                    lunch_budget_max = ?,
+                    dinner_budget_text = ?,
+                    dinner_budget_min = ?,
+                    dinner_budget_max = ?,
+                    price_updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    lunch_budget_text,
+                    lunch_budget_min,
+                    lunch_budget_max,
+                    dinner_budget_text,
+                    dinner_budget_min,
+                    dinner_budget_max,
+                    price_updated_at,
+                    restaurant_id,
+                ),
+            )
+            if cur.rowcount == 0:
+                return None
+        return self.get(restaurant_id)
+
+    def restaurants_missing_prices(self, limit: int = 5) -> list[Restaurant]:
+        """取得有食べログ URL、但還沒補價格的餐廳。"""
+
+        with self.session() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM restaurants
+                WHERE tabelog_url IS NOT NULL
+                  AND trim(tabelog_url) != ''
+                  AND price_updated_at IS NULL
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._row_to_restaurant(row) for row in rows]
 
     def delete_restaurant(self, restaurant_id: int) -> bool:
         """刪除一間餐廳。管理後台刪錯資料時會用到。"""
@@ -427,6 +560,13 @@ class RestaurantDB:
             source_message_id=row["source_message_id"],
             created_by=row["created_by"],
             created_at=row["created_at"],
+            lunch_budget_text=row["lunch_budget_text"],
+            lunch_budget_min=row["lunch_budget_min"],
+            lunch_budget_max=row["lunch_budget_max"],
+            dinner_budget_text=row["dinner_budget_text"],
+            dinner_budget_min=row["dinner_budget_min"],
+            dinner_budget_max=row["dinner_budget_max"],
+            price_updated_at=row["price_updated_at"],
         )
 
 

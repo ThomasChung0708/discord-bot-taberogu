@@ -30,6 +30,8 @@ SHEET_HEADERS = [
     "tabelog_url",
     "comments",
     "keywords",
+    "lunch_budget",
+    "dinner_budget",
 ]
 
 
@@ -72,12 +74,14 @@ def sync_restaurants_to_sheet(
                 restaurant.tabelog_url or "",
                 restaurant.comments,
                 ", ".join(restaurant.keywords),
+                restaurant.lunch_budget_text or "",
+                restaurant.dinner_budget_text or "",
             ]
         )
 
     sheet = service.spreadsheets()
     ensure_worksheet(sheet, spreadsheet_id, worksheet_name)
-    range_name = f"{worksheet_name}!A:H"
+    range_name = f"{worksheet_name}!A:J"
 
     # clear + update 比 append 更適合這個專案：
     # append 會一直往下加，容易產生重複資料。
