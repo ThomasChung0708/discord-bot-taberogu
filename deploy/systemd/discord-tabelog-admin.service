@@ -1,0 +1,17 @@
+[Unit]
+Description=Discord Tabelog Public/Admin Web
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/discord-tabelog-bot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/discord-tabelog-bot/.venv/bin/python -m uvicorn admin_app:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=10
+User=discordbot
+Group=discordbot
+
+[Install]
+WantedBy=multi-user.target

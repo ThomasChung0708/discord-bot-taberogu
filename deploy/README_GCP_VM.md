@@ -62,3 +62,68 @@ sudo -u discordbot git pull
 sudo -u discordbot .venv/bin/pip install -r requirements.txt
 sudo systemctl restart discord-tabelog-bot
 ```
+
+## 讓朋友查看餐廳資料
+
+`admin_app.py` 有兩個頁面：
+
+- 公開只讀頁：`http://VM外部IP:8000/`
+- 管理後台：`http://VM外部IP:8000/admin`
+
+公開頁可以給朋友查看、搜尋、篩選餐廳。管理後台需要 `.env` 的 `ADMIN_PASSWORD` 才能編輯、刪除、匯入或同步資料。
+
+### 1. 在 `.env` 加管理密碼
+
+```bash
+cd /opt/discord-tabelog-bot
+sudo nano .env
+```
+
+加入：
+
+```env
+ADMIN_PASSWORD=你自己的管理密碼
+```
+
+### 2. 安裝 web 後台服務
+
+```bash
+cd /opt/discord-tabelog-bot
+sudo cp deploy/systemd/discord-tabelog-admin.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable discord-tabelog-admin
+sudo systemctl start discord-tabelog-admin
+```
+
+查看狀態：
+
+```bash
+sudo systemctl status discord-tabelog-admin
+sudo journalctl -u discord-tabelog-admin -f
+```
+
+### 3. 開啟 GCP 防火牆
+
+到 Google Cloud Console：
+
+1. VPC 網路
+2. 防火牆
+3. 建立防火牆規則
+4. 方向：Ingress
+5. 目標：你的 VM，或全部 VM
+6. 來源 IPv4 範圍：`0.0.0.0/0`
+7. TCP：`8000`
+
+開好後，朋友可以打開：
+
+```text
+http://VM外部IP:8000/
+```
+
+如果你之前的 VM 外部 IP 沒變，就是：
+
+```text
+http://35.252.238.61:8000/
+```
+
+注意：這是 HTTP，不是 HTTPS。公開查看頁可以先這樣測試；如果要長期公開，建議下一步加 Nginx + HTTPS。
