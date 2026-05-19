@@ -51,6 +51,7 @@ if GOOGLE_SERVICE_ACCOUNT_FILE and not GOOGLE_SERVICE_ACCOUNT_FILE.is_absolute()
     GOOGLE_SERVICE_ACCOUNT_FILE = BASE_DIR / GOOGLE_SERVICE_ACCOUNT_FILE
 GOOGLE_SHEETS_WORKSHEET = os.getenv("GOOGLE_SHEETS_WORKSHEET", "restaurants").strip() or "restaurants"
 GOOGLE_MY_MAPS_URL = os.getenv("GOOGLE_MY_MAPS_URL", "").strip()
+PUBLIC_WEB_URL = os.getenv("PUBLIC_WEB_URL", "").strip()
 
 # 建立共用物件：
 # - db 負責所有 SQLite 操作
@@ -304,6 +305,9 @@ async def on_message(message: discord.Message) -> None:
         return
     if keyword in {"地圖", "共享地圖", "餐廳地圖", "美食地圖"}:
         await send_map_url(message)
+        return
+    if keyword in {"網頁", "網站", "公開頁", "餐廳網頁", "美食網頁", "web", "website"}:
+        await send_public_web_url(message)
         return
 
     await send_search_results(message, keyword)
@@ -775,6 +779,37 @@ async def send_map_url(message: discord.Message) -> None:
         return
     await message.reply(
         f"餐廳地圖在這裡：\n{GOOGLE_MY_MAPS_URL}",
+        mention_author=False,
+    )
+
+
+@client.tree.command(name="web", description="顯示餐廳公開網頁網址")
+async def web(interaction: discord.Interaction) -> None:
+    """slash command：顯示公開餐廳網頁。"""
+
+    if not PUBLIC_WEB_URL:
+        await interaction.response.send_message(
+            "還沒有設定公開網頁網址。請先在 .env 加上 PUBLIC_WEB_URL。",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.send_message(
+        f"餐廳公開網頁在這裡：\n{PUBLIC_WEB_URL}",
+        ephemeral=False,
+    )
+
+
+async def send_public_web_url(message: discord.Message) -> None:
+    """@bot 網頁：回覆公開餐廳網頁。"""
+
+    if not PUBLIC_WEB_URL:
+        await message.reply(
+            "還沒有設定公開網頁網址。請先在 .env 加上 PUBLIC_WEB_URL。",
+            mention_author=False,
+        )
+        return
+    await message.reply(
+        f"餐廳公開網頁在這裡：\n{PUBLIC_WEB_URL}",
         mention_author=False,
     )
 

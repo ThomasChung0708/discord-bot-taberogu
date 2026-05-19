@@ -16,6 +16,7 @@
 - `/export_map_csv`：匯出 CSV，可匯入 Google My Maps 或 Google Sheets。
 - `/list_restaurant`：列出目前已儲存的餐廳與ID
 - 如果訊息裡是 Google Maps 連結，bot 會嘗試從網址解析店名，再反查食べログ店家網址。
+- `@bot 網頁` 或 `/web`：顯示公開餐廳網頁網址。
  
 
 ## 設定
@@ -33,6 +34,7 @@ GOOGLE_SERVICE_ACCOUNT_FILE=service-account.json
 GOOGLE_SHEETS_WORKSHEET=restaurants
 GOOGLE_MY_MAPS_URL=你的 Google My Maps 分享網址
 ADMIN_PASSWORD=管理後台密碼
+PUBLIC_WEB_URL=公開餐廳網頁網址
 ```
 
 3. 安裝套件：
