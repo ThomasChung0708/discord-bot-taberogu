@@ -312,6 +312,9 @@ async def on_message(message: discord.Message) -> None:
     if keyword in {"網頁", "網站", "公開頁", "餐廳網頁", "美食網頁", "web", "website"}:
         await send_public_web_url(message)
         return
+    if is_enrich_prices_message(keyword):
+        await enrich_prices_from_message(message, keyword)
+        return
 
     await send_search_results(message, keyword)
 
@@ -801,14 +804,29 @@ async def enrich_prices(interaction: discord.Interaction, limit: int = 5) -> Non
     """從已保存的食べログ URL 補抓價格資訊。"""
 
     await interaction.response.defer(thinking=True, ephemeral=True)
+    result = enrich_prices_data(limit)
+    await interaction.followup.send(result, ephemeral=True)
+
+
+async def enrich_prices_from_message(message: discord.Message, keyword: str) -> None:
+    """@bot 補價格：用一般訊息觸發價格補抓。
+
+    Slash command 可能被 Discord 快取拖延，一般訊息入口可以立刻使用。
+    """
+
+    limit = parse_first_int(keyword) or 5
+    status_message = await message.reply("正在補抓食べログ價格...", mention_author=False)
+    result = enrich_prices_data(limit)
+    await status_message.edit(content=result[:1900])
+
+
+def enrich_prices_data(limit: int = 5) -> str:
+    """補抓食べログ價格並回傳摘要文字。"""
+
     safe_limit = min(max(limit, 1), 20)
     restaurants = db.restaurants_missing_prices(limit=safe_limit)
     if not restaurants:
-        await interaction.followup.send(
-            "目前沒有需要補價格的餐廳，或餐廳沒有食べログ網址。",
-            ephemeral=True,
-        )
-        return
+        return "目前沒有需要補價格的餐廳，或餐廳沒有食べログ網址。"
 
     updated = []
     not_found = []
@@ -843,7 +861,7 @@ async def enrich_prices(interaction: discord.Interaction, limit: int = 5) -> Non
     if not_found:
         lines.append("\n找不到價格：")
         lines.extend(not_found[:10])
-    await interaction.followup.send("\n".join(lines), ephemeral=True)
+    return "\n".join(lines)
 
 
 async def sync_google_sheet_from_message(message: discord.Message) -> None:
@@ -1029,6 +1047,20 @@ def parse_keywords(value: str | None) -> list[str]:
         return []
     text = value.replace("、", ",").replace("\n", ",")
     return [part.strip() for part in text.split(",") if part.strip()]
+
+
+def is_enrich_prices_message(keyword: str) -> bool:
+    """判斷 @bot 訊息是不是補抓價格。"""
+
+    normalized = keyword.strip().lower()
+    return normalized.startswith(("補價格", "補抓價格", "更新價格", "enrich_prices", "enrich prices"))
+
+
+def parse_first_int(value: str) -> int | None:
+    """從文字中抓第一個整數，例如「補價格 5」會得到 5。"""
+
+    match = re.search(r"\d+", value)
+    return int(match.group(0)) if match else None
 
 
 async def messages_between(
