@@ -316,6 +316,10 @@ async def on_message(message: discord.Message) -> None:
         await enrich_prices_from_message(message, keyword)
         return
 
+    keyword = cleanup_search_keyword(keyword)
+    if not keyword:
+        await message.reply("請在提到我後面加上關鍵字，例如：@食べログBOT 拉麵", mention_author=False)
+        return
     await send_search_results(message, keyword)
 
 
@@ -1052,7 +1056,8 @@ def parse_keywords(value: str | None) -> list[str]:
 def is_enrich_prices_message(keyword: str) -> bool:
     """判斷 @bot 訊息是不是補抓價格。"""
 
-    normalized = keyword.strip().lower()
+    normalized = keyword.strip().lower().replace("　", " ")
+    normalized = re.sub(r"[：:，,。.!！?？]+", " ", normalized).strip()
     return normalized.startswith(("補價格", "補抓價格", "更新價格", "enrich_prices", "enrich prices"))
 
 
@@ -1061,6 +1066,34 @@ def parse_first_int(value: str) -> int | None:
 
     match = re.search(r"\d+", value)
     return int(match.group(0)) if match else None
+
+
+def cleanup_search_keyword(keyword: str) -> str:
+    """把自然語句清成適合搜尋 DB 的關鍵字。
+
+    例如：
+    - 新宿 拉麵推薦 -> 新宿 拉麵
+    - 渋谷想吃家系有推薦嗎 -> 渋谷 家系
+    """
+
+    text = keyword.strip()
+    replacements = [
+        "有推薦嗎",
+        "推薦一下",
+        "推薦",
+        "想吃",
+        "我想吃",
+        "現在人在",
+        "人在",
+        "附近",
+        "嗎",
+        "?",
+        "？",
+    ]
+    for old in replacements:
+        text = text.replace(old, " ")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
 async def messages_between(
