@@ -784,7 +784,7 @@ async def backup_db(interaction: discord.Interaction) -> None:
         return
 
     backup_path = create_database_backup()
-    filename = f"restaurants_backup_{dt.datetime.now(dt.UTC).strftime('%Y%m%d_%H%M%S')}.sqlite3"
+    filename = f"restaurants_backup_{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%d_%H%M%S')}.sqlite3"
     try:
         await interaction.followup.send(
             "這是目前餐廳資料庫備份檔。",

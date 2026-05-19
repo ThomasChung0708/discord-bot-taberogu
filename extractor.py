@@ -12,7 +12,7 @@ bot.py 會把 Discord 訊息整理成 MessageSnippet，交給這個模組。
 import json
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 
@@ -151,7 +151,7 @@ def fetch_tabelog_price_info(url: str | None) -> PriceInfo:
     dinner_min, dinner_max = parse_budget_range(dinner_text)
     updated_at = None
     if lunch_text or dinner_text:
-        updated_at = datetime.now(UTC).isoformat(timespec="seconds")
+        updated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     return PriceInfo(
         lunch_budget_text=lunch_text,
         lunch_budget_min=lunch_min,
