@@ -17,6 +17,7 @@ extractor.py、sheets_sync.py 這些模組完成真正工作。
 import csv
 import datetime as dt
 import io
+import json
 import os
 import re
 import sqlite3
@@ -29,7 +30,7 @@ from dotenv import load_dotenv
 from googleapiclient.errors import HttpError
 from openai import OpenAI
 
-from db import Restaurant, RestaurantDB
+from db import Restaurant, RestaurantDB, normalize_search_text
 from extractor import MessageSnippet, extract_restaurant, fetch_tabelog_price_info
 from sheets_sync import sync_restaurants_to_sheet
 
@@ -316,6 +317,10 @@ async def on_message(message: discord.Message) -> None:
         await enrich_prices_from_message(message, keyword)
         return
 
+    recommendation_request = parse_recommendation_request(keyword)
+    if recommendation_request is not None:
+        await send_recommendations(message, recommendation_request)
+        return
     keyword = cleanup_search_keyword(keyword)
     if not keyword:
         await message.reply("請在提到我後面加上關鍵字，例如：@食べログBOT 拉麵", mention_author=False)
@@ -520,6 +525,366 @@ async def find_restaurant(interaction: discord.Interaction, keyword: str) -> Non
         view=view,
         ephemeral=True,
     )
+
+@client.tree.command(name="recommend", description="從資料庫餐廳中推薦符合條件的店")
+@app_commands.describe(request="例如：新宿 家系 濃厚 1500，或：池袋 豬排")
+async def recommend(interaction: discord.Interaction, request: str) -> None:
+    """Recommend restaurants from the saved database only."""
+
+    await interaction.response.defer(thinking=True, ephemeral=False)
+    content = build_recommendation_response(request)
+    await interaction.followup.send(content, ephemeral=False)
+
+
+def parse_recommendation_request(keyword: str) -> str | None:
+    """Return the recommendation request part for @bot mention messages."""
+
+    text = keyword.strip()
+    normalized = normalize_search_text(text)
+    trigger_prefixes = [
+        "找",
+        "推薦",
+        "帮我找",
+        "幫我找",
+        "帮我推荐",
+        "幫我推薦",
+        "recommend",
+    ]
+    for trigger in trigger_prefixes:
+        normalized_trigger = normalize_search_text(trigger)
+        if normalized == normalized_trigger:
+            return ""
+        if normalized.startswith(normalized_trigger + " "):
+            return text[len(trigger) :].strip()
+        if normalized.startswith(normalized_trigger):
+            rest = text[len(trigger) :].strip()
+            rest = re.sub(r"^(在|到|想吃|吃)\s*", "", rest)
+            if rest:
+                return rest
+    return None
+
+
+async def send_recommendations(target: discord.Message, request: str) -> None:
+    """Reply to a mention-based recommendation request."""
+
+    if not request:
+        await target.reply(
+            "想找什麼類型呢？例如：`@食べログBOT 找 新宿 家系 濃厚`",
+            mention_author=False,
+        )
+        return
+    status = await target.reply("正在從已儲存的餐廳裡挑候選...", mention_author=False)
+    response = build_recommendation_response(request)
+    await status.edit(content=response)
+
+
+def build_recommendation_response(request: str) -> str:
+    """Build a recommendation message without inventing restaurants."""
+
+    candidates = recommendation_candidates(request, limit=10)
+    if not candidates:
+        return (
+            f"目前沒有找到符合「{request}」的已儲存餐廳。\n"
+            "可以先試試比較短的關鍵字，例如：`@食べログBOT 拉麵` 或 `@食べログBOT 找 新宿 拉麵`。"
+        )
+
+    ranked = rank_recommendations_with_ai(request, candidates)
+    lines = [f"從 DB 裡幫你挑了 {len(ranked)} 間「{request}」候選："]
+    for index, (restaurant, reason) in enumerate(ranked, start=1):
+        price = recommendation_price_text(restaurant)
+        lines.append(
+            "\n".join(
+                part
+                for part in [
+                    f"{index}. ID {restaurant.id}｜{restaurant.name}",
+                    f"   {restaurant.category} / {restaurant.area or '地區未填'}",
+                    f"   理由：{reason}",
+                    f"   價格：{price}" if price else "",
+                    f"   食べログ：{restaurant.tabelog_url}" if restaurant.tabelog_url else "",
+                    f"   Google Maps：{restaurant.google_maps_url}" if restaurant.google_maps_url else "",
+                ]
+                if part
+            )
+        )
+    return trim_discord_message("\n\n".join(lines))
+
+
+def recommendation_candidates(request: str, limit: int = 10) -> list[Restaurant]:
+    """Score saved restaurants against a natural language request."""
+
+    restaurants = db.all()
+    scored: list[tuple[int, int, Restaurant]] = []
+    budget = parse_first_int(request)
+    tokens = recommendation_tokens(request)
+    for restaurant in restaurants:
+        score = score_restaurant_for_request(restaurant, tokens, budget)
+        if score > 0:
+            scored.append((score, -restaurant.id, restaurant))
+    scored.sort(reverse=True)
+    return [restaurant for _, _, restaurant in scored[:limit]]
+
+
+def recommendation_tokens(request: str) -> list[str]:
+    """Split a request into normalized searchable tokens."""
+
+    text = cleanup_search_keyword(request)
+    text = re.sub(r"[、，。！？!?/｜|]+", " ", text)
+    stop_words = {
+        "找",
+        "推薦",
+        "帮我",
+        "幫我",
+        "有沒有",
+        "有没有",
+        "可以",
+        "嗎",
+        "么",
+        "現在",
+        "現在人",
+        "人在",
+        "想吃",
+        "最好吃",
+        "之類",
+        "之類的",
+        "餐廳",
+        "店",
+        "附近",
+    }
+    normalized_stops = {normalize_search_text(word) for word in stop_words}
+    normalized_text = normalize_search_text(text)
+    tokens: list[str] = []
+    for raw in text.split():
+        raw = raw.strip()
+        if not raw:
+            continue
+        normalized = normalize_search_text(raw)
+        if not normalized or normalized in normalized_stops:
+            continue
+        if normalized.isdigit():
+            continue
+        tokens.append(normalized)
+        tokens.extend(recommendation_synonyms(normalized))
+    for term in known_recommendation_terms():
+        if term and term in normalized_text and term not in tokens:
+            tokens.append(term)
+    for alias in recommendation_synonyms_for_text(normalized_text):
+        if alias not in tokens:
+            tokens.append(alias)
+    if not tokens:
+        fallback = normalize_search_text(text)
+        if fallback:
+            tokens.append(fallback)
+    return tokens
+
+
+def known_recommendation_terms() -> list[str]:
+    """Collect saved areas/categories/keywords so natural sentences can match them."""
+
+    terms: list[str] = []
+    seen: set[str] = set()
+    for restaurant in db.all():
+        for value in [restaurant.area, restaurant.category, *restaurant.keywords]:
+            normalized = normalize_search_text(value or "")
+            if len(normalized) < 2 or normalized in seen:
+                continue
+            seen.add(normalized)
+            terms.append(normalized)
+    return terms
+
+
+def recommendation_synonyms(token: str) -> list[str]:
+    """Map common Chinese/Taiwanese food words to Japanese DB keywords."""
+
+    groups = [
+        ("豬排", ["とんかつ", "かつ", "カツ", "炸豬排"]),
+        ("猪排", ["とんかつ", "かつ", "カツ", "炸猪排"]),
+        ("拉麵", ["ラーメン", "らーめん", "ramen"]),
+        ("拉面", ["ラーメン", "らーめん", "ramen"]),
+        ("沾麵", ["つけ麺", "つけめん"]),
+        ("沾面", ["つけ麺", "つけめん"]),
+        ("燒肉", ["焼肉", "やきにく", "yakiniku"]),
+        ("烧肉", ["焼肉", "やきにく", "yakiniku"]),
+        ("壽司", ["寿司", "すし", "sushi"]),
+        ("寿司", ["寿司", "すし", "sushi"]),
+        ("咖哩", ["カレー", "curry"]),
+        ("咖喱", ["カレー", "curry"]),
+        ("居酒屋", ["居酒屋", "izakaya"]),
+    ]
+    aliases: list[str] = []
+    for source, values in groups:
+        normalized_source = normalize_search_text(source)
+        normalized_values = [normalize_search_text(value) for value in values]
+        if token == normalized_source or token in normalized_values:
+            aliases.extend([normalized_source, *normalized_values])
+    return [alias for alias in aliases if alias != token]
+
+
+def recommendation_synonyms_for_text(normalized_text: str) -> list[str]:
+    """Find synonym tokens inside a sentence that was not split by spaces."""
+
+    aliases: list[str] = []
+    seed_words = [
+        "豬排",
+        "猪排",
+        "拉麵",
+        "拉面",
+        "沾麵",
+        "沾面",
+        "燒肉",
+        "烧肉",
+        "壽司",
+        "寿司",
+        "咖哩",
+        "咖喱",
+        "居酒屋",
+    ]
+    for word in seed_words:
+        normalized_word = normalize_search_text(word)
+        if normalized_word in normalized_text:
+            aliases.append(normalized_word)
+            aliases.extend(recommendation_synonyms(normalized_word))
+    return aliases
+
+
+def score_restaurant_for_request(
+    restaurant: Restaurant,
+    tokens: list[str],
+    budget: int | None,
+) -> int:
+    """Give higher points to area/category/keyword matches than comment matches."""
+
+    fields = {
+        "name": normalize_search_text(restaurant.name),
+        "category": normalize_search_text(restaurant.category),
+        "area": normalize_search_text(restaurant.area or ""),
+        "keywords": normalize_search_text(" ".join(restaurant.keywords)),
+        "comments": normalize_search_text(restaurant.comments or ""),
+    }
+    score = 0
+    for token in tokens:
+        if token in fields["area"]:
+            score += 5
+        if token in fields["category"]:
+            score += 4
+        if token in fields["keywords"]:
+            score += 4
+        if token in fields["name"]:
+            score += 3
+        if token in fields["comments"]:
+            score += 2
+    if budget and restaurant_matches_budget(restaurant, budget):
+        score += 2
+    return score
+
+
+def restaurant_matches_budget(restaurant: Restaurant, budget: int) -> bool:
+    """Return True when known lunch/dinner max price is within the requested budget."""
+
+    known_ranges = [
+        (restaurant.lunch_budget_min, restaurant.lunch_budget_max),
+        (restaurant.dinner_budget_min, restaurant.dinner_budget_max),
+    ]
+    for minimum, maximum in known_ranges:
+        if maximum and maximum <= budget:
+            return True
+        if minimum and not maximum and minimum <= budget:
+            return True
+    return False
+
+
+def rank_recommendations_with_ai(
+    request: str,
+    candidates: list[Restaurant],
+) -> list[tuple[Restaurant, str]]:
+    """Ask AI to rank only the provided candidates, with a local fallback."""
+
+    candidate_by_id = {restaurant.id: restaurant for restaurant in candidates}
+    payload = [
+        {
+            "id": restaurant.id,
+            "name": restaurant.name,
+            "category": restaurant.category,
+            "area": restaurant.area,
+            "keywords": restaurant.keywords,
+            "comments": (restaurant.comments or "")[:500],
+            "lunch_budget": restaurant.lunch_budget_text,
+            "dinner_budget": restaurant.dinner_budget_text,
+        }
+        for restaurant in candidates
+    ]
+    try:
+        response = openai_client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "你是餐廳推薦助手。只能從使用者提供的 candidates 中推薦，"
+                        "絕對不能新增或猜測不存在的餐廳。請用繁體中文回覆 JSON，"
+                        "格式為 {\"recommendations\":[{\"id\":數字,\"reason\":\"一句理由\"}]}，最多 3 間。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {"request": request, "candidates": payload},
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            temperature=0.2,
+            max_tokens=500,
+            response_format={"type": "json_object"},
+            timeout=20,
+        )
+        raw = response.choices[0].message.content or "{}"
+        data = json.loads(raw)
+        ranked: list[tuple[Restaurant, str]] = []
+        for item in data.get("recommendations", [])[:3]:
+            restaurant = candidate_by_id.get(int(item.get("id", 0)))
+            if not restaurant:
+                continue
+            reason = str(item.get("reason") or fallback_recommendation_reason(restaurant)).strip()
+            ranked.append((restaurant, reason[:160]))
+        if ranked:
+            return ranked
+    except Exception as exc:
+        print(f"recommendation AI ranking failed: {exc}")
+
+    return [
+        (restaurant, fallback_recommendation_reason(restaurant))
+        for restaurant in candidates[:3]
+    ]
+
+
+def fallback_recommendation_reason(restaurant: Restaurant) -> str:
+    """Simple non-AI reason used when the API is unavailable."""
+
+    details = [restaurant.category]
+    if restaurant.area:
+        details.append(restaurant.area)
+    if restaurant.keywords:
+        details.append("、".join(restaurant.keywords[:3]))
+    return "、".join(part for part in details if part) or "和你的條件有關聯"
+
+
+def recommendation_price_text(restaurant: Restaurant) -> str:
+    """Format price information for recommendation results."""
+
+    parts = []
+    if restaurant.lunch_budget_text:
+        parts.append(f"午餐 {restaurant.lunch_budget_text}")
+    if restaurant.dinner_budget_text:
+        parts.append(f"晚餐 {restaurant.dinner_budget_text}")
+    return " / ".join(parts)
+
+
+def trim_discord_message(content: str, limit: int = 1900) -> str:
+    """Keep normal message replies under Discord's 2000-character limit."""
+
+    if len(content) <= limit:
+        return content
+    return content[: limit - 20].rstrip() + "\n...（結果太長，先省略後面）"
 
 
 async def send_search_results(
