@@ -133,7 +133,7 @@ http://35.252.238.61:8000/
 正式 HTTPS 建議準備一個網域，例如：
 
 ```text
-food.example.com
+discord-bottaberogudb.org
 ```
 
 把網域的 DNS A record 指到 VM 外部 IP：
@@ -184,7 +184,7 @@ sudo nano /etc/caddy/Caddyfile
 範例：
 
 ```text
-food.example.com {
+discord-bottaberogudb.org {
     reverse_proxy 127.0.0.1:8000
 }
 ```
@@ -198,19 +198,19 @@ sudo systemctl reload caddy
 之後公開頁會變成：
 
 ```text
-https://food.example.com/
+https://discord-bottaberogudb.org/
 ```
 
 管理頁：
 
 ```text
-https://food.example.com/admin
+https://discord-bottaberogudb.org/admin
 ```
 
 最後記得把 `.env` 改成：
 
 ```env
-PUBLIC_WEB_URL=https://food.example.com/
+PUBLIC_WEB_URL=https://discord-bottaberogudb.org/
 ```
 
 再重啟 bot：
