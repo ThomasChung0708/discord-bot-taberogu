@@ -287,6 +287,13 @@ class RestaurantDB:
         google_maps_url: str | None,
         comments: str,
         keywords: Iterable[str],
+        lunch_budget_text: str | None = None,
+        lunch_budget_min: int | None = None,
+        lunch_budget_max: int | None = None,
+        dinner_budget_text: str | None = None,
+        dinner_budget_min: int | None = None,
+        dinner_budget_max: int | None = None,
+        price_updated_at: str | None = None,
     ) -> Restaurant | None:
         """更新後台表單送來的餐廳資料。
 
@@ -305,7 +312,14 @@ class RestaurantDB:
                     tabelog_url = ?,
                     google_maps_url = ?,
                     comments = ?,
-                    keywords_json = ?
+                    keywords_json = ?,
+                    lunch_budget_text = COALESCE(?, lunch_budget_text),
+                    lunch_budget_min = COALESCE(?, lunch_budget_min),
+                    lunch_budget_max = COALESCE(?, lunch_budget_max),
+                    dinner_budget_text = COALESCE(?, dinner_budget_text),
+                    dinner_budget_min = COALESCE(?, dinner_budget_min),
+                    dinner_budget_max = COALESCE(?, dinner_budget_max),
+                    price_updated_at = COALESCE(?, price_updated_at)
                 WHERE id = ?
                 """,
                 (
@@ -316,6 +330,13 @@ class RestaurantDB:
                     google_maps_url.strip() if google_maps_url and google_maps_url.strip() else None,
                     comments.strip(),
                     json.dumps(clean_keywords, ensure_ascii=False),
+                    lunch_budget_text.strip() if lunch_budget_text and lunch_budget_text.strip() else None,
+                    lunch_budget_min,
+                    lunch_budget_max,
+                    dinner_budget_text.strip() if dinner_budget_text and dinner_budget_text.strip() else None,
+                    dinner_budget_min,
+                    dinner_budget_max,
+                    price_updated_at,
                     restaurant_id,
                 ),
             )

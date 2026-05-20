@@ -59,6 +59,12 @@ class RestaurantPayload(BaseModel):
     google_maps_url: str | None = None
     comments: str = ""
     keywords: list[str] = Field(default_factory=list)
+    lunch_budget_text: str | None = None
+    lunch_budget_min: int | None = None
+    lunch_budget_max: int | None = None
+    dinner_budget_text: str | None = None
+    dinner_budget_min: int | None = None
+    dinner_budget_max: int | None = None
 
 
 class CommentPayload(BaseModel):
@@ -186,6 +192,13 @@ def update_restaurant(
         google_maps_url=payload.google_maps_url,
         comments=payload.comments,
         keywords=payload.keywords,
+        lunch_budget_text=payload.lunch_budget_text,
+        lunch_budget_min=payload.lunch_budget_min,
+        lunch_budget_max=payload.lunch_budget_max,
+        dinner_budget_text=payload.dinner_budget_text,
+        dinner_budget_min=payload.dinner_budget_min,
+        dinner_budget_max=payload.dinner_budget_max,
+        price_updated_at="manual",
     )
     if not restaurant:
         raise HTTPException(status_code=404, detail="找不到這間餐廳")
@@ -834,10 +847,22 @@ ADMIN_HTML = r"""
             <input id="keywordsInput">
           </label>
           <label>午餐價格
-            <input id="lunchBudget" disabled>
+            <input id="lunchBudget" placeholder="例：￥1,000～￥1,999">
           </label>
           <label>晚餐價格
-            <input id="dinnerBudget" disabled>
+            <input id="dinnerBudget" placeholder="例：￥2,000～￥2,999">
+          </label>
+          <label>午餐最低
+            <input id="lunchMin" type="number" min="0" step="1">
+          </label>
+          <label>午餐最高
+            <input id="lunchMax" type="number" min="0" step="1">
+          </label>
+          <label>晚餐最低
+            <input id="dinnerMin" type="number" min="0" step="1">
+          </label>
+          <label>晚餐最高
+            <input id="dinnerMax" type="number" min="0" step="1">
           </label>
           <label class="full">食べログ URL
             <input id="tabelogUrl">
@@ -1002,6 +1027,10 @@ ADMIN_HTML = r"""
       $("keywordsInput").value = (restaurant.keywords || []).join(", ");
       $("lunchBudget").value = restaurant.lunch_budget_text || "";
       $("dinnerBudget").value = restaurant.dinner_budget_text || "";
+      $("lunchMin").value = restaurant.lunch_budget_min || "";
+      $("lunchMax").value = restaurant.lunch_budget_max || "";
+      $("dinnerMin").value = restaurant.dinner_budget_min || "";
+      $("dinnerMax").value = restaurant.dinner_budget_max || "";
       $("tabelogUrl").value = restaurant.tabelog_url || "";
       $("googleMapsUrl").value = restaurant.google_maps_url || "";
       $("comments").value = restaurant.comments || "";
@@ -1025,8 +1054,19 @@ ADMIN_HTML = r"""
         tabelog_url: $("tabelogUrl").value.trim() || null,
         google_maps_url: $("googleMapsUrl").value.trim() || null,
         comments: $("comments").value.trim(),
-        keywords: $("keywordsInput").value.split(",").map((item) => item.trim()).filter(Boolean)
+        keywords: $("keywordsInput").value.split(",").map((item) => item.trim()).filter(Boolean),
+        lunch_budget_text: $("lunchBudget").value.trim() || null,
+        lunch_budget_min: numberOrNull($("lunchMin").value),
+        lunch_budget_max: numberOrNull($("lunchMax").value),
+        dinner_budget_text: $("dinnerBudget").value.trim() || null,
+        dinner_budget_min: numberOrNull($("dinnerMin").value),
+        dinner_budget_max: numberOrNull($("dinnerMax").value)
       };
+    }
+
+    function numberOrNull(value) {
+      const text = String(value).trim();
+      return text ? Number(text) : null;
     }
 
     $("editorForm").addEventListener("submit", async (event) => {

@@ -156,6 +156,7 @@ GOOGLE_SHEETS_WORKSHEET=restaurants
 - 搜尋餐廳
 - 用地區和分類篩選
 - 編輯店名、分類、地區、連結、關鍵字、評論
+- 手動編輯午餐/晚餐價格與價格範圍
 - 刪除錯誤餐廳
 - 追加評論
 - 從 Google Sheet 匯入餐廳到 SQLite

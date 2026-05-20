@@ -127,3 +127,94 @@ http://35.252.238.61:8000/
 ```
 
 注意：這是 HTTP，不是 HTTPS。公開查看頁可以先這樣測試；如果要長期公開，建議下一步加 Nginx + HTTPS。
+
+## HTTPS 公開方式
+
+正式 HTTPS 建議準備一個網域，例如：
+
+```text
+food.example.com
+```
+
+把網域的 DNS A record 指到 VM 外部 IP：
+
+```text
+35.252.238.61
+```
+
+接著可以用 Caddy 自動申請 HTTPS 憑證。
+
+### 1. 安裝 Caddy
+
+```bash
+sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo apt update
+sudo apt install -y caddy
+```
+
+### 2. 讓 admin web 只聽本機
+
+如果使用 Caddy 對外公開，建議把 `/etc/systemd/system/discord-tabelog-admin.service` 裡的：
+
+```text
+--host 0.0.0.0 --port 8000
+```
+
+改成：
+
+```text
+--host 127.0.0.1 --port 8000
+```
+
+然後：
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart discord-tabelog-admin
+```
+
+### 3. 設定 Caddyfile
+
+```bash
+sudo nano /etc/caddy/Caddyfile
+```
+
+範例：
+
+```text
+food.example.com {
+    reverse_proxy 127.0.0.1:8000
+}
+```
+
+重啟：
+
+```bash
+sudo systemctl reload caddy
+```
+
+之後公開頁會變成：
+
+```text
+https://food.example.com/
+```
+
+管理頁：
+
+```text
+https://food.example.com/admin
+```
+
+最後記得把 `.env` 改成：
+
+```env
+PUBLIC_WEB_URL=https://food.example.com/
+```
+
+再重啟 bot：
+
+```bash
+sudo systemctl restart discord-tabelog-bot
+```
