@@ -272,7 +272,8 @@ class RestaurantBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self) -> None:
-        await self.tree.sync()
+        commands = await self.tree.sync()
+        print(f"Synced {len(commands)} slash commands: {', '.join(command.name for command in commands)}")
 
 
 client = RestaurantBot()
@@ -530,6 +531,28 @@ async def find_restaurant(interaction: discord.Interaction, keyword: str) -> Non
 @app_commands.describe(request="例如：新宿 家系 濃厚 1500，或：池袋 豬排")
 async def recommend(interaction: discord.Interaction, request: str) -> None:
     """Recommend restaurants from the saved database only."""
+
+    await send_recommendation_interaction(interaction, request)
+
+
+@client.tree.command(name="recommend_restaurant", description="從資料庫餐廳中推薦符合條件的店")
+@app_commands.describe(request="例如：新宿 家系 濃厚 1500，或：池袋 豬排")
+async def recommend_restaurant(interaction: discord.Interaction, request: str) -> None:
+    """Longer alias for the recommendation command."""
+
+    await send_recommendation_interaction(interaction, request)
+
+
+@client.tree.command(name="recommed", description="推薦餐廳指令的拼字容錯")
+@app_commands.describe(request="例如：新宿 家系 濃厚 1500，或：池袋 豬排")
+async def recommed(interaction: discord.Interaction, request: str) -> None:
+    """Typo-tolerant alias for /recommend."""
+
+    await send_recommendation_interaction(interaction, request)
+
+
+async def send_recommendation_interaction(interaction: discord.Interaction, request: str) -> None:
+    """Handle all slash-command recommendation aliases."""
 
     await interaction.response.defer(thinking=True, ephemeral=False)
     content = build_recommendation_response(request)
