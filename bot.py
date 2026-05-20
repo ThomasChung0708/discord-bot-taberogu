@@ -326,6 +326,10 @@ async def on_message(message: discord.Message) -> None:
     if not keyword:
         await message.reply("請在提到我後面加上關鍵字，例如：@食べログBOT 拉麵", mention_author=False)
         return
+    recommendation_request = parse_recommendation_request(keyword)
+    if recommendation_request is not None:
+        await send_recommendations(message, recommendation_request)
+        return
     await send_search_results(message, keyword)
 
 
@@ -562,29 +566,76 @@ async def send_recommendation_interaction(interaction: discord.Interaction, requ
 def parse_recommendation_request(keyword: str) -> str | None:
     """Return the recommendation request part for @bot mention messages."""
 
-    text = keyword.strip()
-    normalized = normalize_search_text(text)
-    trigger_prefixes = [
-        "找",
-        "推薦",
-        "帮我找",
-        "幫我找",
-        "帮我推荐",
-        "幫我推薦",
-        "recommend",
-    ]
-    for trigger in trigger_prefixes:
-        normalized_trigger = normalize_search_text(trigger)
-        if normalized == normalized_trigger:
-            return ""
-        if normalized.startswith(normalized_trigger + " "):
-            return text[len(trigger) :].strip()
-        if normalized.startswith(normalized_trigger):
-            rest = text[len(trigger) :].strip()
-            rest = re.sub(r"^(在|到|想吃|吃)\s*", "", rest)
+    for text in recommendation_request_lines(keyword):
+        normalized = normalize_search_text(text)
+        for trigger in recommendation_trigger_prefixes():
+            normalized_trigger = normalize_search_text(trigger)
+            if normalized == normalized_trigger:
+                return ""
+            if normalized.startswith(normalized_trigger):
+                rest = text[len(trigger) :].strip()
+                rest = strip_recommendation_leading_words(rest)
+                if rest:
+                    return rest
+        for trigger in recommendation_inline_triggers():
+            index = normalized.find(normalize_search_text(trigger))
+            if index <= 0:
+                continue
+            rest = text[index + len(trigger) :].strip()
+            rest = strip_recommendation_leading_words(rest)
             if rest:
                 return rest
     return None
+
+
+def recommendation_request_lines(keyword: str) -> list[str]:
+    """Split a mention message into meaningful request lines."""
+
+    return [line.strip() for line in keyword.splitlines() if line.strip()]
+
+
+def recommendation_trigger_prefixes() -> list[str]:
+    """Recommendation command words, built with code points for encoding safety."""
+
+    return [
+        chr(0x627E),  # 找
+        chr(0x63A8) + chr(0x85A6),  # 推薦
+        chr(0x5E2E) + chr(0x6211) + chr(0x627E),  # 帮我找
+        chr(0x5E6B) + chr(0x6211) + chr(0x627E),  # 幫我找
+        chr(0x5E2E) + chr(0x6211) + chr(0x63A8) + chr(0x8350),  # 帮我推荐
+        chr(0x5E6B) + chr(0x6211) + chr(0x63A8) + chr(0x85A6),  # 幫我推薦
+        "recommend",
+    ]
+
+
+def recommendation_inline_triggers() -> list[str]:
+    """Words that may appear inside a casual sentence, such as '我想找...'."""
+
+    return [
+        chr(0x627E),  # 找
+        chr(0x63A8) + chr(0x85A6),  # 推薦
+        "recommend",
+    ]
+
+
+def strip_recommendation_leading_words(text: str) -> str:
+    """Remove filler words after the trigger word."""
+
+    filler_words = [
+        chr(0x5728),  # 在
+        chr(0x5230),  # 到
+        chr(0x5403),  # 吃
+        chr(0x60F3) + chr(0x5403),  # 想吃
+    ]
+    result = text.strip()
+    changed = True
+    while changed and result:
+        changed = False
+        for word in filler_words:
+            if result.startswith(word):
+                result = result[len(word) :].strip()
+                changed = True
+    return result
 
 
 async def send_recommendations(target: discord.Message, request: str) -> None:
@@ -915,6 +966,11 @@ async def send_search_results(
     keyword: str,
 ) -> None:
     """@bot 關鍵字搜尋共用流程。"""
+
+    recommendation_request = parse_recommendation_request(keyword)
+    if recommendation_request is not None:
+        await send_recommendations(target, recommendation_request)
+        return
 
     restaurants = db.search(keyword)
     if not restaurants:
