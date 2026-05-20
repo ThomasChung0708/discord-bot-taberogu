@@ -1,0 +1,10 @@
+[Unit]
+Description=Backup Discord Tabelog SQLite database
+
+[Service]
+Type=oneshot
+User=discordbot
+Group=discordbot
+WorkingDirectory=/opt/discord-tabelog-bot
+EnvironmentFile=/opt/discord-tabelog-bot/.env
+ExecStart=/opt/discord-tabelog-bot/.venv/bin/python /opt/discord-tabelog-bot/backup_db.py

@@ -38,6 +38,7 @@ class Restaurant:
     google_maps_url: str | None
     comments: str
     keywords: list[str]
+    tags: list[str]
     source_channel_id: int
     source_message_id: int | None
     created_by: str
@@ -49,6 +50,18 @@ class Restaurant:
     dinner_budget_min: int | None = None
     dinner_budget_max: int | None = None
     price_updated_at: str | None = None
+
+
+@dataclass(frozen=True)
+class RestaurantComment:
+    """Single comment attached to one restaurant."""
+
+    id: int
+    restaurant_id: int
+    comment: str
+    created_by: str
+    created_at: str
+    source_message_id: int | None = None
 
 
 class RestaurantDB:
@@ -125,6 +138,37 @@ class RestaurantDB:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_restaurants_category ON restaurants(category)"
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS restaurant_comments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    restaurant_id INTEGER NOT NULL,
+                    comment TEXT NOT NULL,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    source_message_id INTEGER,
+                    FOREIGN KEY (restaurant_id) REFERENCES restaurants(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS restaurant_tags (
+                    restaurant_id INTEGER NOT NULL,
+                    tag TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (restaurant_id, tag),
+                    FOREIGN KEY (restaurant_id) REFERENCES restaurants(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_restaurant_comments_restaurant_id ON restaurant_comments(restaurant_id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_restaurant_tags_tag ON restaurant_tags(tag)"
+            )
+            self._migrate_comments_and_tags(conn)
 
     def _ensure_column(self, conn: sqlite3.Connection, name: str, definition: str) -> None:
         """舊 DB 升級用：缺欄位時自動 ALTER TABLE 加上。"""
@@ -132,6 +176,89 @@ class RestaurantDB:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(restaurants)").fetchall()}
         if name not in columns:
             conn.execute(f"ALTER TABLE restaurants ADD COLUMN {name} {definition}")
+
+    def _migrate_comments_and_tags(self, conn: sqlite3.Connection) -> None:
+        """Backfill normalized comments and tags from the legacy columns."""
+
+        rows = conn.execute(
+            "SELECT id, comments, keywords_json, name, category, area FROM restaurants"
+        ).fetchall()
+        for row in rows:
+            restaurant_id = int(row["id"])
+            existing_comment = conn.execute(
+                "SELECT 1 FROM restaurant_comments WHERE restaurant_id = ? LIMIT 1",
+                (restaurant_id,),
+            ).fetchone()
+            comments = _remove_basic_info_placeholder(str(row["comments"] or "").strip())
+            if comments and not existing_comment:
+                conn.execute(
+                    """
+                    INSERT INTO restaurant_comments (restaurant_id, comment, created_by)
+                    VALUES (?, ?, ?)
+                    """,
+                    (restaurant_id, comments, "Migration"),
+                )
+
+            try:
+                keywords = json.loads(row["keywords_json"] or "[]")
+            except json.JSONDecodeError:
+                keywords = []
+            tags = clean_keyword_list(
+                keywords,
+                name=row["name"],
+                category=row["category"],
+                area=row["area"],
+            )
+            for tag in tags:
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO restaurant_tags (restaurant_id, tag)
+                    VALUES (?, ?)
+                    """,
+                    (restaurant_id, tag),
+                )
+
+    def _append_comment_row(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        restaurant_id: int,
+        comment: str,
+        created_by: str,
+        source_message_id: int | None = None,
+    ) -> None:
+        """Insert one normalized comment row."""
+
+        text = comment.strip()
+        if not text:
+            return
+        conn.execute(
+            """
+            INSERT INTO restaurant_comments (
+                restaurant_id, comment, created_by, source_message_id
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (restaurant_id, text, created_by, source_message_id),
+        )
+
+    def _set_tags(
+        self,
+        conn: sqlite3.Connection,
+        restaurant_id: int,
+        tags: Iterable[str],
+    ) -> None:
+        """Replace normalized tags for one restaurant."""
+
+        conn.execute("DELETE FROM restaurant_tags WHERE restaurant_id = ?", (restaurant_id,))
+        for tag in clean_keyword_list(tags):
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO restaurant_tags (restaurant_id, tag)
+                VALUES (?, ?)
+                """,
+                (restaurant_id, tag),
+            )
 
     def add_restaurant(
         self,
@@ -197,7 +324,18 @@ class RestaurantDB:
                     price_updated_at,
                 ),
             )
-            return int(cur.lastrowid or conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+            restaurant_id = int(cur.lastrowid or conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+            self._set_tags(conn, restaurant_id, clean_keywords)
+            legacy_comments = _remove_basic_info_placeholder(comments.strip())
+            if legacy_comments:
+                self._append_comment_row(
+                    conn,
+                    restaurant_id=restaurant_id,
+                    comment=legacy_comments,
+                    created_by=created_by,
+                    source_message_id=source_message_id,
+                )
+            return restaurant_id
 
     def search(self, keyword: str, limit: int = 25) -> list[Restaurant]:
         """搜尋餐廳。
@@ -217,10 +355,29 @@ class RestaurantDB:
                    OR lower(area) LIKE ?
                    OR lower(comments) LIKE ?
                    OR lower(keywords_json) LIKE ?
+                   OR EXISTS (
+                       SELECT 1 FROM restaurant_comments
+                       WHERE restaurant_comments.restaurant_id = restaurants.id
+                         AND lower(restaurant_comments.comment) LIKE ?
+                   )
+                   OR EXISTS (
+                       SELECT 1 FROM restaurant_tags
+                       WHERE restaurant_tags.restaurant_id = restaurants.id
+                         AND lower(restaurant_tags.tag) LIKE ?
+                   )
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (f"%{key}%", f"%{key}%", f"%{key}%", f"%{key}%", f"%{key}%", limit),
+                (
+                    f"%{key}%",
+                    f"%{key}%",
+                    f"%{key}%",
+                    f"%{key}%",
+                    f"%{key}%",
+                    f"%{key}%",
+                    f"%{key}%",
+                    limit,
+                ),
             ).fetchall()
             if len(rows) < limit:
                 existing_ids = {int(row["id"]) for row in rows}
@@ -231,7 +388,7 @@ class RestaurantDB:
                 ).fetchall():
                     if int(row["id"]) in existing_ids:
                         continue
-                    if normalized_key in normalize_restaurant_row(row):
+                    if normalized_key in self._normalized_restaurant_text(conn, row):
                         extra_rows.append(row)
                     if len(rows) + len(extra_rows) >= limit:
                         break
@@ -270,6 +427,12 @@ class RestaurantDB:
             base_comments = ""
         comments = "\n\n".join(part for part in [base_comments, section] if part)
         with self.session() as conn:
+            self._append_comment_row(
+                conn,
+                restaurant_id=restaurant_id,
+                comment=comment,
+                created_by=created_by,
+            )
             conn.execute(
                 "UPDATE restaurants SET comments = ? WHERE id = ?",
                 (comments, restaurant_id),
@@ -342,6 +505,7 @@ class RestaurantDB:
             )
             if cur.rowcount == 0:
                 return None
+            self._set_tags(conn, restaurant_id, clean_keywords)
         return self.get(restaurant_id)
 
     def import_restaurant(
@@ -411,6 +575,7 @@ class RestaurantDB:
                         restaurant_id,
                     ),
                 )
+                self._set_tags(conn, restaurant_id, clean_keywords)
                 return restaurant_id
 
             cur = conn.execute(
@@ -442,7 +607,9 @@ class RestaurantDB:
                     price_updated_at,
                 ),
             )
-            return int(restaurant_id or cur.lastrowid)
+            new_id = int(restaurant_id or cur.lastrowid)
+            self._set_tags(conn, new_id, clean_keywords)
+            return new_id
 
     def update_price_info(
         self,
@@ -507,8 +674,43 @@ class RestaurantDB:
         """刪除一間餐廳。管理後台刪錯資料時會用到。"""
 
         with self.session() as conn:
+            conn.execute("DELETE FROM restaurant_comments WHERE restaurant_id = ?", (restaurant_id,))
+            conn.execute("DELETE FROM restaurant_tags WHERE restaurant_id = ?", (restaurant_id,))
             cur = conn.execute("DELETE FROM restaurants WHERE id = ?", (restaurant_id,))
             return cur.rowcount > 0
+
+    def comments_for(self, restaurant_id: int) -> list[RestaurantComment]:
+        """Return normalized comments for one restaurant."""
+
+        with self.session() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM restaurant_comments
+                WHERE restaurant_id = ?
+                ORDER BY created_at ASC, id ASC
+                """,
+                (restaurant_id,),
+            ).fetchall()
+        return [self._row_to_comment(row) for row in rows]
+
+    def tags_for(self, restaurant_id: int) -> list[str]:
+        """Return normalized tags for one restaurant."""
+
+        with self.session() as conn:
+            return self._tags_for_conn(conn, restaurant_id)
+
+    def all_tags(self) -> list[str]:
+        """Return every tag currently used by saved restaurants."""
+
+        with self.session() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT tag FROM restaurant_tags
+                WHERE trim(tag) != ''
+                ORDER BY tag
+                """
+            ).fetchall()
+        return [str(row["tag"]) for row in rows]
 
     def areas(self) -> list[str]:
         """取得目前所有地區，用於後台篩選選單。"""
@@ -564,10 +766,11 @@ class RestaurantDB:
             ).fetchall()
         return [self._row_to_restaurant(row) for row in rows]
 
-    @staticmethod
-    def _row_to_restaurant(row: sqlite3.Row) -> Restaurant:
+    def _row_to_restaurant(self, row: sqlite3.Row) -> Restaurant:
         """把 SQLite row 轉成 Restaurant dataclass。"""
 
+        with self.session() as conn:
+            tags = self._tags_for_conn(conn, int(row["id"]))
         return Restaurant(
             id=int(row["id"]),
             name=row["name"],
@@ -577,6 +780,7 @@ class RestaurantDB:
             google_maps_url=row["google_maps_url"],
             comments=row["comments"],
             keywords=json.loads(row["keywords_json"]),
+            tags=tags,
             source_channel_id=int(row["source_channel_id"]),
             source_message_id=row["source_message_id"],
             created_by=row["created_by"],
@@ -588,6 +792,59 @@ class RestaurantDB:
             dinner_budget_min=row["dinner_budget_min"],
             dinner_budget_max=row["dinner_budget_max"],
             price_updated_at=row["price_updated_at"],
+        )
+
+    @staticmethod
+    def _row_to_comment(row: sqlite3.Row) -> RestaurantComment:
+        """Convert a SQLite comment row into a dataclass."""
+
+        return RestaurantComment(
+            id=int(row["id"]),
+            restaurant_id=int(row["restaurant_id"]),
+            comment=row["comment"],
+            created_by=row["created_by"],
+            created_at=row["created_at"],
+            source_message_id=row["source_message_id"],
+        )
+
+    @staticmethod
+    def _tags_for_conn(conn: sqlite3.Connection, restaurant_id: int) -> list[str]:
+        """Read tags with an existing connection."""
+
+        rows = conn.execute(
+            """
+            SELECT tag FROM restaurant_tags
+            WHERE restaurant_id = ?
+            ORDER BY tag
+            """,
+            (restaurant_id,),
+        ).fetchall()
+        return [str(row["tag"]) for row in rows]
+
+    def _normalized_restaurant_text(self, conn: sqlite3.Connection, row: sqlite3.Row) -> str:
+        """Build the full searchable text for normalized Python-side search."""
+
+        restaurant_id = int(row["id"])
+        comment_rows = conn.execute(
+            """
+            SELECT comment FROM restaurant_comments
+            WHERE restaurant_id = ?
+            """,
+            (restaurant_id,),
+        ).fetchall()
+        return normalize_search_text(
+            " ".join(
+                str(part or "")
+                for part in [
+                    row["name"],
+                    row["category"],
+                    row["area"],
+                    row["comments"],
+                    row["keywords_json"],
+                    " ".join(self._tags_for_conn(conn, restaurant_id)),
+                    " ".join(str(comment["comment"] or "") for comment in comment_rows),
+                ]
+            )
         )
 
 

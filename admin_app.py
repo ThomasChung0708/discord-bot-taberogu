@@ -16,11 +16,13 @@ SQLite 資料庫。它的目標不是取代 Discord 操作，而是補上管理�
 """
 
 import os
+import sqlite3
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import Depends, Header, HTTPException, FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, Field
 
 from db import Restaurant, RestaurantDB
@@ -44,6 +46,11 @@ if GOOGLE_SERVICE_ACCOUNT_FILE and not GOOGLE_SERVICE_ACCOUNT_FILE.is_absolute()
     GOOGLE_SERVICE_ACCOUNT_FILE = BASE_DIR / GOOGLE_SERVICE_ACCOUNT_FILE
 GOOGLE_SHEETS_WORKSHEET = os.getenv("GOOGLE_SHEETS_WORKSHEET", "restaurants").strip() or "restaurants"
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
+BACKUP_DIR_VALUE = os.getenv("BACKUP_DIR", "backups").strip() or "backups"
+BACKUP_DIR = Path(BACKUP_DIR_VALUE)
+if not BACKUP_DIR.is_absolute():
+    BACKUP_DIR = BASE_DIR / BACKUP_DIR
+BACKUP_KEEP = int(os.getenv("BACKUP_KEEP", "14"))
 
 db = RestaurantDB(str(DB_PATH))
 app = FastAPI(title="Discord 食べログ Bot Admin")
@@ -59,6 +66,7 @@ class RestaurantPayload(BaseModel):
     google_maps_url: str | None = None
     comments: str = ""
     keywords: list[str] = Field(default_factory=list)
+    tags: list[str] = Field(default_factory=list)
     lunch_budget_text: str | None = None
     lunch_budget_min: int | None = None
     lunch_budget_max: int | None = None
@@ -74,6 +82,19 @@ class CommentPayload(BaseModel):
     created_by: str = "Admin"
 
 
+def comment_to_dict(comment) -> dict:
+    """Convert a normalized comment row to JSON."""
+
+    return {
+        "id": comment.id,
+        "restaurant_id": comment.restaurant_id,
+        "comment": comment.comment,
+        "created_by": comment.created_by,
+        "created_at": comment.created_at,
+        "source_message_id": comment.source_message_id,
+    }
+
+
 def restaurant_to_dict(restaurant: Restaurant) -> dict:
     """把 dataclass 轉成 JSON-friendly dict。"""
 
@@ -86,6 +107,8 @@ def restaurant_to_dict(restaurant: Restaurant) -> dict:
         "google_maps_url": restaurant.google_maps_url,
         "comments": restaurant.comments,
         "keywords": restaurant.keywords,
+        "tags": restaurant.tags,
+        "comment_items": [comment_to_dict(comment) for comment in db.comments_for(restaurant.id)],
         "source_channel_id": restaurant.source_channel_id,
         "source_message_id": restaurant.source_message_id,
         "created_by": restaurant.created_by,
@@ -162,6 +185,7 @@ def list_restaurants(
         "restaurants": [restaurant_to_dict(restaurant) for restaurant in restaurants],
         "areas": db.areas(),
         "categories": db.categories(),
+        "tags": db.all_tags(),
     }
 
 
@@ -191,7 +215,7 @@ def update_restaurant(
         tabelog_url=payload.tabelog_url,
         google_maps_url=payload.google_maps_url,
         comments=payload.comments,
-        keywords=payload.keywords,
+        keywords=payload.tags or payload.keywords,
         lunch_budget_text=payload.lunch_budget_text,
         lunch_budget_min=payload.lunch_budget_min,
         lunch_budget_max=payload.lunch_budget_max,
@@ -290,6 +314,63 @@ def import_sheet(_: None = Depends(require_admin)) -> dict:
         )
         imported += 1
     return {"ok": True, "imported": imported, "skipped": skipped}
+
+
+@app.post("/api/backups")
+def create_backup(_: None = Depends(require_admin)) -> dict:
+    """Create a timestamped SQLite backup and rotate old backup files."""
+
+    path = create_database_backup()
+    return {"ok": True, "filename": path.name, "path": str(path), "count": len(list_backups())}
+
+
+@app.get("/api/backups")
+def backup_list(_: None = Depends(require_admin)) -> dict:
+    """List available local database backups."""
+
+    return {"backups": [backup.name for backup in list_backups()]}
+
+
+@app.get("/api/backups/{filename}")
+def download_backup(filename: str, _: None = Depends(require_admin)) -> FileResponse:
+    """Download one local database backup."""
+
+    backup = BACKUP_DIR / filename
+    if backup.parent != BACKUP_DIR or not backup.exists() or backup.suffix != ".sqlite3":
+        raise HTTPException(status_code=404, detail="找不到備份檔")
+    return FileResponse(backup, filename=backup.name)
+
+
+def create_database_backup() -> Path:
+    """Use SQLite's backup API so the file is consistent while the app is running."""
+
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = BACKUP_DIR / f"restaurants_{timestamp}.sqlite3"
+    source = sqlite3.connect(DB_PATH)
+    destination = sqlite3.connect(backup_path)
+    try:
+        source.backup(destination)
+    finally:
+        destination.close()
+        source.close()
+    rotate_backups()
+    return backup_path
+
+
+def list_backups() -> list[Path]:
+    """Return backup files newest first."""
+
+    if not BACKUP_DIR.exists():
+        return []
+    return sorted(BACKUP_DIR.glob("restaurants_*.sqlite3"), key=lambda path: path.stat().st_mtime, reverse=True)
+
+
+def rotate_backups() -> None:
+    """Keep only the newest configured number of backups."""
+
+    for old_backup in list_backups()[BACKUP_KEEP:]:
+        old_backup.unlink(missing_ok=True)
 
 
 def parse_optional_int(value: str) -> int | None:
@@ -413,6 +494,30 @@ PUBLIC_HTML = r"""
       font-size: 13px;
     }
 
+    .tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin: 8px 0;
+    }
+
+    .tag {
+      background: #eef7f5;
+      color: #0f766e;
+      border: 1px solid #cbe7e2;
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: 12px;
+    }
+
+    .about {
+      margin-top: 22px;
+      border-top: 1px solid var(--line);
+      padding-top: 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
     @media (max-width: 760px) {
       header { align-items: flex-start; flex-direction: column; }
       .toolbar { grid-template-columns: 1fr; }
@@ -432,6 +537,11 @@ PUBLIC_HTML = r"""
     </div>
     <div id="summary" class="summary"></div>
     <div id="grid" class="grid"></div>
+    <section class="about">
+      <strong>About this project</strong><br>
+      Discord messages are saved into a SQLite restaurant database, then shown here through a FastAPI public page.
+      The same data can be synced to Google Sheets and imported into Google My Maps. The bot runs on a GCP VM with systemd and HTTPS.
+    </section>
   </main>
 
   <script>
@@ -483,6 +593,7 @@ PUBLIC_HTML = r"""
           <h2>${escapeHtml(restaurant.name)}</h2>
           <div class="meta">ID ${restaurant.id} / ${escapeHtml(restaurant.category)} ${escapeHtml(restaurant.area || "")}</div>
           <div class="meta">${priceText(restaurant)}</div>
+          <div class="tags">${tagHtml(restaurant.tags || restaurant.keywords || [])}</div>
           <div class="comments">${escapeHtml(shortText(restaurant.comments || ""))}</div>
           <div class="links">
             ${restaurant.google_maps_url ? `<a target="_blank" rel="noreferrer" href="${escapeAttr(restaurant.google_maps_url)}">Google Maps</a>` : ""}
@@ -502,6 +613,10 @@ PUBLIC_HTML = r"""
       if (restaurant.lunch_budget_text) parts.push(`午餐 ${restaurant.lunch_budget_text}`);
       if (restaurant.dinner_budget_text) parts.push(`晚餐 ${restaurant.dinner_budget_text}`);
       return escapeHtml(parts.join(" / "));
+    }
+
+    function tagHtml(tags) {
+      return tags.slice(0, 6).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("");
     }
 
     function escapeHtml(value) {
@@ -898,6 +1013,15 @@ ADMIN_HTML = r"""
     };
 
     const $ = (id) => document.getElementById(id);
+    const backupButton = document.createElement("button");
+    backupButton.id = "createBackup";
+    backupButton.type = "button";
+    backupButton.textContent = "立即備份 DB";
+    $("reload").insertAdjacentElement("beforebegin", backupButton);
+    const commentItems = document.createElement("div");
+    commentItems.id = "commentItems";
+    commentItems.className = "status";
+    $("comments").closest("label").insertAdjacentElement("afterend", commentItems);
 
     function setMessage(text, isError = false) {
       $("message").textContent = text;
@@ -1024,7 +1148,7 @@ ADMIN_HTML = r"""
       $("name").value = restaurant.name || "";
       $("categoryInput").value = restaurant.category || "";
       $("areaInput").value = restaurant.area || "";
-      $("keywordsInput").value = (restaurant.keywords || []).join(", ");
+      $("keywordsInput").value = (restaurant.tags || restaurant.keywords || []).join(", ");
       $("lunchBudget").value = restaurant.lunch_budget_text || "";
       $("dinnerBudget").value = restaurant.dinner_budget_text || "";
       $("lunchMin").value = restaurant.lunch_budget_min || "";
@@ -1034,6 +1158,7 @@ ADMIN_HTML = r"""
       $("tabelogUrl").value = restaurant.tabelog_url || "";
       $("googleMapsUrl").value = restaurant.google_maps_url || "";
       $("comments").value = restaurant.comments || "";
+      renderCommentItems(restaurant.comment_items || []);
       $("newComment").value = "";
       setMessage("");
       renderList();
@@ -1055,6 +1180,7 @@ ADMIN_HTML = r"""
         google_maps_url: $("googleMapsUrl").value.trim() || null,
         comments: $("comments").value.trim(),
         keywords: $("keywordsInput").value.split(",").map((item) => item.trim()).filter(Boolean),
+        tags: $("keywordsInput").value.split(",").map((item) => item.trim()).filter(Boolean),
         lunch_budget_text: $("lunchBudget").value.trim() || null,
         lunch_budget_min: numberOrNull($("lunchMin").value),
         lunch_budget_max: numberOrNull($("lunchMax").value),
@@ -1067,6 +1193,20 @@ ADMIN_HTML = r"""
     function numberOrNull(value) {
       const text = String(value).trim();
       return text ? Number(text) : null;
+    }
+
+    function renderCommentItems(items) {
+      if (!items.length) {
+        $("commentItems").innerHTML = "目前沒有獨立評論紀錄。";
+        return;
+      }
+      $("commentItems").innerHTML = items.map((item) => `
+        <div style="border:1px solid var(--line); border-radius:6px; padding:8px; margin-bottom:6px; background:#fff;">
+          <strong>${escapeHtml(item.created_by || "Unknown")}</strong>
+          <span style="color:var(--muted);"> ${escapeHtml(item.created_at || "")}</span>
+          <div>${escapeHtml(item.comment || "")}</div>
+        </div>
+      `).join("");
     }
 
     $("editorForm").addEventListener("submit", async (event) => {
@@ -1098,8 +1238,29 @@ ADMIN_HTML = r"""
       }
       const restaurant = await response.json();
       $("comments").value = restaurant.comments || "";
+      renderCommentItems(restaurant.comment_items || []);
       $("newComment").value = "";
       setMessage("已追加評論。");
+    });
+
+    backupButton.addEventListener("click", async () => {
+      if (!confirm("要立即建立一份 SQLite 備份嗎？")) return;
+      backupButton.disabled = true;
+      backupButton.textContent = "備份中...";
+      try {
+        const response = await fetch("/api/backups", {
+          method: "POST",
+          headers: {"X-Admin-Password": state.adminPassword}
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "備份失敗");
+        alert(`已建立備份：${data.filename}`);
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        backupButton.disabled = false;
+        backupButton.textContent = "立即備份 DB";
+      }
     });
 
     $("deleteRestaurant").addEventListener("click", async () => {

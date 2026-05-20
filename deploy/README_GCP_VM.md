@@ -63,6 +63,41 @@ sudo -u discordbot .venv/bin/pip install -r requirements.txt
 sudo systemctl restart discord-tabelog-bot
 ```
 
+## SQLite 自動備份
+
+最新版有附一個每日備份用的 systemd timer。它會執行 `backup_db.py`，使用 SQLite backup API 建立一致的資料庫備份，預設存在：
+
+```text
+/opt/discord-tabelog-bot/backups
+```
+
+預設保留最近 14 份。可以在 `.env` 調整：
+
+```env
+BACKUP_DIR=backups
+BACKUP_KEEP=14
+```
+
+安裝 timer：
+
+```bash
+cd /opt/discord-tabelog-bot
+sudo mkdir -p /opt/discord-tabelog-bot/backups
+sudo chown -R discordbot:discordbot /opt/discord-tabelog-bot/backups
+sudo cp deploy/systemd/discord-tabelog-backup.service /etc/systemd/system/
+sudo cp deploy/systemd/discord-tabelog-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now discord-tabelog-backup.timer
+```
+
+手動測試一次：
+
+```bash
+sudo systemctl start discord-tabelog-backup.service
+sudo journalctl -u discord-tabelog-backup -n 40 --no-pager
+ls -lh /opt/discord-tabelog-bot/backups
+```
+
 ## 讓朋友查看餐廳資料
 
 `admin_app.py` 有兩個頁面：

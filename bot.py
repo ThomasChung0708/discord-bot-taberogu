@@ -757,7 +757,7 @@ def known_recommendation_terms() -> list[str]:
     terms: list[str] = []
     seen: set[str] = set()
     for restaurant in db.all():
-        for value in [restaurant.area, restaurant.category, *restaurant.keywords]:
+        for value in [restaurant.area, restaurant.category, *restaurant.keywords, *restaurant.tags]:
             normalized = normalize_search_text(value or "")
             if len(normalized) < 2 or normalized in seen:
                 continue
@@ -832,6 +832,7 @@ def score_restaurant_for_request(
         "category": normalize_search_text(restaurant.category),
         "area": normalize_search_text(restaurant.area or ""),
         "keywords": normalize_search_text(" ".join(restaurant.keywords)),
+        "tags": normalize_search_text(" ".join(restaurant.tags)),
         "comments": normalize_search_text(restaurant.comments or ""),
     }
     score = 0
@@ -842,6 +843,8 @@ def score_restaurant_for_request(
             score += 4
         if token in fields["keywords"]:
             score += 4
+        if token in fields["tags"]:
+            score += 5
         if token in fields["name"]:
             score += 3
         if token in fields["comments"]:
@@ -880,6 +883,7 @@ def rank_recommendations_with_ai(
             "category": restaurant.category,
             "area": restaurant.area,
             "keywords": restaurant.keywords,
+            "tags": restaurant.tags,
             "comments": (restaurant.comments or "")[:500],
             "lunch_budget": restaurant.lunch_budget_text,
             "dinner_budget": restaurant.dinner_budget_text,
@@ -937,8 +941,8 @@ def fallback_recommendation_reason(restaurant: Restaurant) -> str:
     details = [restaurant.category]
     if restaurant.area:
         details.append(restaurant.area)
-    if restaurant.keywords:
-        details.append("、".join(restaurant.keywords[:3]))
+    if restaurant.tags or restaurant.keywords:
+        details.append("、".join((restaurant.tags or restaurant.keywords)[:3]))
     return "、".join(part for part in details if part) or "和你的條件有關聯"
 
 
@@ -1454,6 +1458,8 @@ def restaurant_embed(restaurant: Restaurant) -> discord.Embed:
         embed.add_field(name="價格", value="\n".join(price_lines), inline=False)
     if restaurant.keywords:
         embed.add_field(name="關鍵字", value=", ".join(restaurant.keywords), inline=False)
+    if restaurant.tags:
+        embed.add_field(name="Tags", value=", ".join(restaurant.tags), inline=False)
     return embed
 
 
