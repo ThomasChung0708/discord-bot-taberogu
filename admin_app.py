@@ -316,6 +316,14 @@ def import_sheet(_: None = Depends(require_admin)) -> dict:
     return {"ok": True, "imported": imported, "skipped": skipped}
 
 
+@app.post("/api/cleanup-taxonomy")
+def cleanup_taxonomy(_: None = Depends(require_admin)) -> dict:
+    """Normalize existing area/category values."""
+
+    changed = db.cleanup_area_categories()
+    return {"ok": True, "changed": changed}
+
+
 @app.post("/api/backups")
 def create_backup(_: None = Depends(require_admin)) -> dict:
     """Create a timestamped SQLite backup and rotate old backup files."""
@@ -1018,6 +1026,11 @@ ADMIN_HTML = r"""
     backupButton.type = "button";
     backupButton.textContent = "立即備份 DB";
     $("reload").insertAdjacentElement("beforebegin", backupButton);
+    const cleanupButton = document.createElement("button");
+    cleanupButton.id = "cleanupTaxonomy";
+    cleanupButton.type = "button";
+    cleanupButton.textContent = "整理地區/分類";
+    backupButton.insertAdjacentElement("beforebegin", cleanupButton);
     const commentItems = document.createElement("div");
     commentItems.id = "commentItems";
     commentItems.className = "status";
@@ -1241,6 +1254,27 @@ ADMIN_HTML = r"""
       renderCommentItems(restaurant.comment_items || []);
       $("newComment").value = "";
       setMessage("已追加評論。");
+    });
+
+    cleanupButton.addEventListener("click", async () => {
+      if (!confirm("要把既有資料的地區與分類整理成統一格式嗎？")) return;
+      cleanupButton.disabled = true;
+      cleanupButton.textContent = "整理中...";
+      try {
+        const response = await fetch("/api/cleanup-taxonomy", {
+          method: "POST",
+          headers: {"X-Admin-Password": state.adminPassword}
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "整理失敗");
+        alert(`已整理 ${data.changed} 筆餐廳`);
+        await loadRestaurants();
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        cleanupButton.disabled = false;
+        cleanupButton.textContent = "整理地區/分類";
+      }
     });
 
     backupButton.addEventListener("click", async () => {

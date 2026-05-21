@@ -13,6 +13,7 @@ from __future__ import annotations
 """
 
 import json
+import re
 import sqlite3
 import unicodedata
 from contextlib import contextmanager
@@ -287,6 +288,8 @@ class RestaurantDB:
         如果 name + tabelog_url 已存在，INSERT OR REPLACE 會保留原本 id。
         """
 
+        category = normalize_category(category)
+        area = normalize_area(area)
         clean_keywords = clean_keyword_list(keywords, name=name, category=category, area=area)
         with self.session() as conn:
             cur = conn.execute(
@@ -464,6 +467,8 @@ class RestaurantDB:
         keywords_json 的 JSON 轉換，避免 admin_app.py 裡混入 SQL 細節。
         """
 
+        category = normalize_category(category)
+        area = normalize_area(area)
         clean_keywords = clean_keyword_list(keywords, name=name, category=category, area=area)
         with self.session() as conn:
             cur = conn.execute(
@@ -487,8 +492,8 @@ class RestaurantDB:
                 """,
                 (
                     name.strip(),
-                    category.strip(),
-                    area.strip() if area and area.strip() else None,
+                    category,
+                    area,
                     tabelog_url.strip() if tabelog_url and tabelog_url.strip() else None,
                     google_maps_url.strip() if google_maps_url and google_maps_url.strip() else None,
                     comments.strip(),
@@ -535,6 +540,8 @@ class RestaurantDB:
         這讓 Google Sheet 可以作為大量手動編輯後的回灌來源。
         """
 
+        category = normalize_category(category)
+        area = normalize_area(area)
         clean_keywords = clean_keyword_list(keywords, name=name, category=category, area=area)
         with self.session() as conn:
             if restaurant_id and self.get(restaurant_id):
@@ -559,8 +566,8 @@ class RestaurantDB:
                     """,
                     (
                         name.strip(),
-                        category.strip(),
-                        area.strip() if area and area.strip() else None,
+                        category,
+                        area,
                         tabelog_url.strip() if tabelog_url and tabelog_url.strip() else None,
                         google_maps_url.strip() if google_maps_url and google_maps_url.strip() else None,
                         comments.strip(),
@@ -591,8 +598,8 @@ class RestaurantDB:
                 (
                     restaurant_id,
                     name.strip(),
-                    category.strip(),
-                    area.strip() if area and area.strip() else None,
+                    category,
+                    area,
                     tabelog_url.strip() if tabelog_url and tabelog_url.strip() else None,
                     google_maps_url.strip() if google_maps_url and google_maps_url.strip() else None,
                     comments.strip(),
@@ -757,6 +764,39 @@ class RestaurantDB:
                     changed += 1
             return changed
 
+    def cleanup_area_categories(self) -> int:
+        """Normalize existing area/category values in saved rows."""
+
+        changed = 0
+        with self.session() as conn:
+            rows = conn.execute("SELECT id, name, category, area, keywords_json FROM restaurants").fetchall()
+            for row in rows:
+                category = normalize_category(row["category"])
+                area = normalize_area(row["area"])
+                if category == row["category"] and area == row["area"]:
+                    continue
+                try:
+                    keywords = json.loads(row["keywords_json"] or "[]")
+                except json.JSONDecodeError:
+                    keywords = []
+                clean_keywords = clean_keyword_list(
+                    keywords,
+                    name=row["name"],
+                    category=category,
+                    area=area,
+                )
+                conn.execute(
+                    """
+                    UPDATE restaurants
+                    SET category = ?, area = ?, keywords_json = ?
+                    WHERE id = ?
+                    """,
+                    (category, area, json.dumps(clean_keywords, ensure_ascii=False), row["id"]),
+                )
+                self._set_tags(conn, int(row["id"]), clean_keywords)
+                changed += 1
+        return changed
+
     def all(self) -> list[Restaurant]:
         """取得全部餐廳，最新建立的排前面。"""
 
@@ -895,6 +935,114 @@ def normalize_search_text(text: str) -> str:
 
     normalized = unicodedata.normalize("NFKC", text).casefold()
     return "".join(katakana_to_hiragana(char) for char in normalized)
+
+
+def normalize_area(area: str | None) -> str | None:
+    """Collapse long addresses into consistent station/neighborhood names."""
+
+    if not area:
+        return None
+    text = unicodedata.normalize("NFKC", str(area)).strip()
+    if not text:
+        return None
+    text = re.sub(r"\s+", "", text)
+    aliases = [
+        ("外神田", "秋葉原"),
+        ("秋葉原", "秋葉原"),
+        ("神保町", "神保町"),
+        ("神田", "神田"),
+        ("神谷町", "神谷町"),
+        ("淡路町", "淡路町"),
+        ("御茶ノ水", "御茶ノ水"),
+        ("小川町", "小川町"),
+        ("東京駅", "東京駅"),
+        ("丸の内", "丸の内"),
+        ("銀座", "銀座"),
+        ("築地", "築地"),
+        ("東銀座", "東銀座"),
+        ("新宿三丁目", "新宿三丁目"),
+        ("西武新宿", "西武新宿"),
+        ("新大久保", "新大久保"),
+        ("大久保", "大久保"),
+        ("高田馬場", "高田馬場"),
+        ("歌舞伎町", "新宿"),
+        ("新宿", "新宿"),
+        ("渋谷", "渋谷"),
+        ("神泉", "神泉"),
+        ("道玄坂", "渋谷"),
+        ("代官山", "代官山"),
+        ("恵比寿", "恵比寿"),
+        ("原宿", "原宿"),
+        ("表参道", "表参道"),
+        ("池袋", "池袋"),
+        ("東池袋", "東池袋"),
+        ("西池袋", "池袋"),
+        ("巣鴨", "巣鴨"),
+        ("駒込", "駒込"),
+        ("六本木", "六本木"),
+        ("赤坂", "赤坂"),
+        ("上野", "上野"),
+        ("御徒町", "御徒町"),
+        ("浅草", "浅草"),
+        ("押上", "押上"),
+        ("中野", "中野"),
+        ("高円寺", "高円寺"),
+        ("阿佐ヶ谷", "阿佐ヶ谷"),
+        ("荻窪", "荻窪"),
+        ("吉祥寺", "吉祥寺"),
+        ("京王堀之内", "京王堀之内"),
+        ("八王子", "八王子"),
+        ("立川", "立川"),
+        ("府中", "府中"),
+        ("十条", "十条"),
+        ("芦花公園", "芦花公園"),
+        ("緑が丘", "緑が丘"),
+        ("肥後橋", "肥後橋"),
+        ("竹田", "竹田"),
+        ("登戸", "登戸"),
+        ("稲田堤", "稲田堤"),
+        ("西川口", "西川口"),
+        ("大宮", "大宮"),
+        ("横浜", "横浜"),
+        ("上星川", "上星川"),
+    ]
+    for needle, canonical in aliases:
+        if needle in text:
+            return canonical
+
+    # Strip common Japanese address prefixes while keeping the local part.
+    text = re.sub(r"^(東京都|神奈川県|埼玉県|千葉県)", "", text)
+    city_only = re.fullmatch(r"(.+?市)", text)
+    if city_only:
+        return city_only.group(1).removesuffix("市")
+    text = re.sub(r"^(.*?市)", "", text)
+    text = re.sub(r"^(.*?[区町村])", "", text)
+    return text or area.strip()
+
+
+def normalize_category(category: str | None) -> str:
+    """Collapse detailed food categories into cleaner filter groups."""
+
+    text = unicodedata.normalize("NFKC", str(category or "")).strip()
+    if not text:
+        return "未分類"
+    normalized = normalize_search_text(text)
+    groups = [
+        ("ラーメン", ["ラーメン", "拉麵", "拉面", "つけ麺", "沾麵", "沾面", "油そば", "まぜそば", "担々麺", "擔擔麺"]),
+        ("肉料理", ["焼肉", "燒肉", "烧肉", "焼鳥", "ステーキ", "ホルモン", "肉"]),
+        ("中華料理", ["中華", "台湾", "台灣", "飲茶", "点心", "點心", "餃子"]),
+        ("日本料理", ["日本料理", "和食", "寿司", "おにぎり", "飯糰", "饭团", "そば", "うどん", "とんかつ", "豬排", "猪排", "カツ", "かつ", "かき氷", "刨冰"]),
+        ("韓国料理", ["韓国"]),
+        ("イタリアン", ["イタリア", "パスタ", "ピザ"]),
+        ("カフェ・スイーツ", ["カフェ", "喫茶", "スイーツ", "ケーキ", "パン", "デザート"]),
+        ("居酒屋・バー", ["居酒屋", "バー", "バル"]),
+        ("カレー", ["カレー"]),
+        ("朝食", ["早餐", "朝食"]),
+    ]
+    for canonical, values in groups:
+        if any(normalize_search_text(value) in normalized for value in values):
+            return canonical
+    return text
 
 
 def clean_keyword_list(
