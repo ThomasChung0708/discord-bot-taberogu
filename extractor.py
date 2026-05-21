@@ -46,6 +46,7 @@ class ExtractionResult:
     area: str | None
     tabelog_url: str | None
     google_maps_url: str | None
+    image_url: str | None
     comments: str
     keywords: list[str]
     reason: str
@@ -110,6 +111,35 @@ def fetch_tabelog_title(url: str | None) -> str | None:
         return str(og_title["content"]).strip()
     if soup.title and soup.title.string:
         return soup.title.string.strip()
+    return None
+
+
+def fetch_tabelog_image_url(url: str | None) -> str | None:
+    """Best-effort fetch of the restaurant preview image from Tabelog."""
+
+    if not url:
+        return None
+    try:
+        resp = requests.get(
+            url,
+            timeout=5,
+            headers={
+                "User-Agent": "Mozilla/5.0 restaurant-memory-bot/0.1",
+                "Accept-Language": "ja,en-US;q=0.8,en;q=0.6",
+            },
+        )
+        resp.raise_for_status()
+    except requests.RequestException:
+        return None
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for selector in [
+        {"property": "og:image"},
+        {"name": "twitter:image"},
+    ]:
+        image = soup.find("meta", selector)
+        if image and image.get("content"):
+            return str(image["content"]).strip()
     return None
 
 
@@ -432,6 +462,7 @@ def extract_restaurant(
         all_text.append(msg.content)
 
     combined = "\n".join(all_text)
+    attachment_image_url = first_image_url(messages)
     tabelog_url = find_tabelog_url(combined)
     google_maps_url = find_google_maps_url(combined)
     google_maps_place_name = place_name_from_google_maps_url(google_maps_url)
@@ -480,6 +511,7 @@ def extract_restaurant(
         tabelog_url = find_tabelog_url_by_search(name, area)
     google_url = google_maps_url or (google_maps_search_url(name, area) if name else None)
     price_info = fetch_tabelog_price_info(tabelog_url)
+    image_url = attachment_image_url or fetch_tabelog_image_url(tabelog_url)
 
     return ExtractionResult(
         name=name,
@@ -487,6 +519,7 @@ def extract_restaurant(
         area=area,
         tabelog_url=tabelog_url,
         google_maps_url=google_url,
+        image_url=image_url,
         comments=str(data.get("comments") or "").strip(),
         keywords=[str(k).strip() for k in data.get("keywords", []) if str(k).strip()],
         reason=str(data.get("reason") or "").strip(),
@@ -507,3 +540,15 @@ def _clean_optional(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def first_image_url(messages: list[MessageSnippet]) -> str | None:
+    """Use the first Discord image attachment as the restaurant card image."""
+
+    image_extensions = (".jpg", ".jpeg", ".png", ".webp", ".gif")
+    for message in messages:
+        for url in message.attachment_urls:
+            clean_url = str(url).split("?", 1)[0].lower()
+            if clean_url.endswith(image_extensions):
+                return str(url)
+    return None

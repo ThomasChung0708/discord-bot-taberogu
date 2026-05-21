@@ -26,6 +26,7 @@ SHEET_HEADERS = [
     "name",
     "category",
     "area",
+    "image_url",
     "google_maps_url",
     "tabelog_url",
     "comments",
@@ -70,6 +71,7 @@ def sync_restaurants_to_sheet(
                 restaurant.name,
                 restaurant.category,
                 restaurant.area or "",
+                restaurant.image_url or "",
                 restaurant.google_maps_url or "",
                 restaurant.tabelog_url or "",
                 restaurant.comments,
@@ -81,7 +83,7 @@ def sync_restaurants_to_sheet(
 
     sheet = service.spreadsheets()
     ensure_worksheet(sheet, spreadsheet_id, worksheet_name)
-    range_name = f"{worksheet_name}!A:J"
+    range_name = f"{worksheet_name}!A:K"
 
     # clear + update 比 append 更適合這個專案：
     # append 會一直往下加，容易產生重複資料。
@@ -120,7 +122,7 @@ def read_restaurants_from_sheet(
 
     result = sheet.values().get(
         spreadsheetId=spreadsheet_id,
-        range=f"{worksheet_name}!A:H",
+        range=f"{worksheet_name}!A:K",
     ).execute()
     values = result.get("values", [])
     if not values:

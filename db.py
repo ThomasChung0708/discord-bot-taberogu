@@ -37,6 +37,7 @@ class Restaurant:
     area: str | None
     tabelog_url: str | None
     google_maps_url: str | None
+    image_url: str | None
     comments: str
     keywords: list[str]
     tags: list[str]
@@ -112,6 +113,7 @@ class RestaurantDB:
                     area TEXT,
                     tabelog_url TEXT,
                     google_maps_url TEXT,
+                    image_url TEXT,
                     comments TEXT NOT NULL,
                     keywords_json TEXT NOT NULL,
                     source_channel_id INTEGER NOT NULL,
@@ -129,6 +131,7 @@ class RestaurantDB:
                 )
                 """
             )
+            self._ensure_column(conn, "image_url", "TEXT")
             self._ensure_column(conn, "lunch_budget_text", "TEXT")
             self._ensure_column(conn, "lunch_budget_min", "INTEGER")
             self._ensure_column(conn, "lunch_budget_max", "INTEGER")
@@ -274,6 +277,7 @@ class RestaurantDB:
         source_channel_id: int,
         source_message_id: int | None,
         created_by: str,
+        image_url: str | None = None,
         lunch_budget_text: str | None = None,
         lunch_budget_min: int | None = None,
         lunch_budget_max: int | None = None,
@@ -295,14 +299,14 @@ class RestaurantDB:
             cur = conn.execute(
                 """
                 INSERT OR REPLACE INTO restaurants (
-                    id, name, category, area, tabelog_url, google_maps_url, comments,
+                    id, name, category, area, tabelog_url, google_maps_url, image_url, comments,
                     keywords_json, source_channel_id, source_message_id, created_by,
                     lunch_budget_text, lunch_budget_min, lunch_budget_max,
                     dinner_budget_text, dinner_budget_min, dinner_budget_max, price_updated_at
                 )
                 VALUES (
                     (SELECT id FROM restaurants WHERE name = ? AND COALESCE(tabelog_url, '') = COALESCE(?, '')),
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -313,6 +317,7 @@ class RestaurantDB:
                     area,
                     tabelog_url,
                     google_maps_url,
+                    image_url.strip() if image_url and image_url.strip() else None,
                     comments,
                     json.dumps(clean_keywords, ensure_ascii=False),
                     source_channel_id,
@@ -453,6 +458,7 @@ class RestaurantDB:
         google_maps_url: str | None,
         comments: str,
         keywords: Iterable[str],
+        image_url: str | None = None,
         lunch_budget_text: str | None = None,
         lunch_budget_min: int | None = None,
         lunch_budget_max: int | None = None,
@@ -479,6 +485,7 @@ class RestaurantDB:
                     area = ?,
                     tabelog_url = ?,
                     google_maps_url = ?,
+                    image_url = ?,
                     comments = ?,
                     keywords_json = ?,
                     lunch_budget_text = COALESCE(?, lunch_budget_text),
@@ -496,6 +503,7 @@ class RestaurantDB:
                     area,
                     tabelog_url.strip() if tabelog_url and tabelog_url.strip() else None,
                     google_maps_url.strip() if google_maps_url and google_maps_url.strip() else None,
+                    image_url.strip() if image_url and image_url.strip() else None,
                     comments.strip(),
                     json.dumps(clean_keywords, ensure_ascii=False),
                     lunch_budget_text.strip() if lunch_budget_text and lunch_budget_text.strip() else None,
@@ -525,6 +533,7 @@ class RestaurantDB:
         comments: str,
         keywords: Iterable[str],
         created_by: str = "Google Sheet",
+        image_url: str | None = None,
         lunch_budget_text: str | None = None,
         lunch_budget_min: int | None = None,
         lunch_budget_max: int | None = None,
@@ -553,6 +562,7 @@ class RestaurantDB:
                         area = ?,
                         tabelog_url = ?,
                         google_maps_url = ?,
+                        image_url = ?,
                         comments = ?,
                         keywords_json = ?,
                         lunch_budget_text = ?,
@@ -570,6 +580,7 @@ class RestaurantDB:
                         area,
                         tabelog_url.strip() if tabelog_url and tabelog_url.strip() else None,
                         google_maps_url.strip() if google_maps_url and google_maps_url.strip() else None,
+                        image_url.strip() if image_url and image_url.strip() else None,
                         comments.strip(),
                         json.dumps(clean_keywords, ensure_ascii=False),
                         lunch_budget_text,
@@ -588,12 +599,12 @@ class RestaurantDB:
             cur = conn.execute(
                 """
                 INSERT OR REPLACE INTO restaurants (
-                    id, name, category, area, tabelog_url, google_maps_url, comments,
+                    id, name, category, area, tabelog_url, google_maps_url, image_url, comments,
                     keywords_json, source_channel_id, source_message_id, created_by,
                     lunch_budget_text, lunch_budget_min, lunch_budget_max,
                     dinner_budget_text, dinner_budget_min, dinner_budget_max, price_updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     restaurant_id,
@@ -602,6 +613,7 @@ class RestaurantDB:
                     area,
                     tabelog_url.strip() if tabelog_url and tabelog_url.strip() else None,
                     google_maps_url.strip() if google_maps_url and google_maps_url.strip() else None,
+                    image_url.strip() if image_url and image_url.strip() else None,
                     comments.strip(),
                     json.dumps(clean_keywords, ensure_ascii=False),
                     created_by,
@@ -818,6 +830,7 @@ class RestaurantDB:
             area=row["area"],
             tabelog_url=row["tabelog_url"],
             google_maps_url=row["google_maps_url"],
+            image_url=row["image_url"],
             comments=row["comments"],
             keywords=json.loads(row["keywords_json"]),
             tags=tags,

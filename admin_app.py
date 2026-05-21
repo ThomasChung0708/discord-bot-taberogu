@@ -64,6 +64,7 @@ class RestaurantPayload(BaseModel):
     area: str | None = None
     tabelog_url: str | None = None
     google_maps_url: str | None = None
+    image_url: str | None = None
     comments: str = ""
     keywords: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
@@ -105,6 +106,7 @@ def restaurant_to_dict(restaurant: Restaurant) -> dict:
         "area": restaurant.area,
         "tabelog_url": restaurant.tabelog_url,
         "google_maps_url": restaurant.google_maps_url,
+        "image_url": restaurant.image_url,
         "comments": restaurant.comments,
         "keywords": restaurant.keywords,
         "tags": restaurant.tags,
@@ -214,6 +216,7 @@ def update_restaurant(
         area=payload.area,
         tabelog_url=payload.tabelog_url,
         google_maps_url=payload.google_maps_url,
+        image_url=payload.image_url,
         comments=payload.comments,
         keywords=payload.tags or payload.keywords,
         lunch_budget_text=payload.lunch_budget_text,
@@ -307,6 +310,7 @@ def import_sheet(_: None = Depends(require_admin)) -> dict:
             area=row.get("area", "").strip() or None,
             google_maps_url=row.get("google_maps_url", "").strip() or None,
             tabelog_url=row.get("tabelog_url", "").strip() or None,
+            image_url=row.get("image_url", "").strip() or None,
             comments=row.get("comments", "").strip(),
             keywords=keywords or [name, category],
             lunch_budget_text=row.get("lunch_budget", "").strip() or None,
@@ -437,6 +441,37 @@ PUBLIC_HTML = r"""
 
     h1 { font-size: 20px; margin: 0; }
     a { color: var(--accent); text-decoration: none; }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .lang-switch {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .lang-switch button {
+      border: 0;
+      border-right: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      padding: 7px 9px;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .lang-switch button:last-child { border-right: 0; }
+    .lang-switch button.active {
+      background: var(--accent);
+      color: #fff;
+    }
+
     main {
       max-width: 1040px;
       margin: 0 auto;
@@ -476,11 +511,32 @@ PUBLIC_HTML = r"""
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 14px;
+      min-height: 190px;
+      position: relative;
     }
 
     .card h2 {
       font-size: 17px;
       margin: 0 0 6px;
+      padding-right: 96px;
+    }
+
+    .food-image {
+      width: 82px;
+      height: 82px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      object-fit: cover;
+      position: absolute;
+      top: 14px;
+      right: 14px;
+      background: #edf5f3;
+    }
+
+    .card.has-image .meta,
+    .card.has-image .tags,
+    .card.has-image .comments {
+      padding-right: 96px;
     }
 
     .meta, .comments {
@@ -534,12 +590,18 @@ PUBLIC_HTML = r"""
 </head>
 <body>
   <header>
-    <h1>共享美食清單</h1>
-    <a href="/admin">管理後台</a>
+    <h1 data-i18n="title">共享美食清單</h1>
+    <div class="header-actions">
+      <div class="lang-switch" aria-label="Language">
+        <button id="langZh" type="button">中文</button>
+        <button id="langJa" type="button">日本語</button>
+      </div>
+      <a href="/admin" data-i18n="adminLink">管理後台</a>
+    </div>
   </header>
   <main>
     <div class="toolbar">
-      <input id="keyword" placeholder="搜尋店名、分類、地區、評論">
+      <input id="keyword" data-i18n-placeholder="searchPlaceholder" placeholder="搜尋店名、分類、地區、評論">
       <select id="area"><option value="">全部地區</option></select>
       <select id="category"><option value="">全部分類</option></select>
     </div>
@@ -553,8 +615,55 @@ PUBLIC_HTML = r"""
   </main>
 
   <script>
-    const state = { restaurants: [], areas: [], categories: [] };
+    const translations = {
+      zh: {
+        title: "共享美食清單",
+        adminLink: "管理後台",
+        searchPlaceholder: "搜尋店名、分類、地區、評論",
+        allAreas: "全部地區",
+        allCategories: "全部分類",
+        summary: (count) => `目前顯示 ${count} 間餐廳`,
+        lunch: "午餐",
+        dinner: "晚餐"
+      },
+      ja: {
+        title: "共有グルメリスト",
+        adminLink: "管理画面",
+        searchPlaceholder: "店名・分類・エリア・コメントを検索",
+        allAreas: "すべてのエリア",
+        allCategories: "すべての分類",
+        summary: (count) => `${count} 件のレストランを表示中`,
+        lunch: "ランチ",
+        dinner: "ディナー"
+      }
+    };
+    const savedLanguage = localStorage.getItem("tabelogLanguage");
+    const state = { restaurants: [], areas: [], categories: [], language: savedLanguage || "zh" };
     const $ = (id) => document.getElementById(id);
+    const t = (key, ...args) => {
+      const value = translations[state.language][key] || translations.zh[key] || key;
+      return typeof value === "function" ? value(...args) : value;
+    };
+
+    function applyLanguage() {
+      document.documentElement.lang = state.language === "ja" ? "ja" : "zh-Hant";
+      document.querySelectorAll("[data-i18n]").forEach((element) => {
+        element.textContent = t(element.dataset.i18n);
+      });
+      document.querySelectorAll("[data-i18n-placeholder]").forEach((element) => {
+        element.placeholder = t(element.dataset.i18nPlaceholder);
+      });
+      $("langZh").classList.toggle("active", state.language === "zh");
+      $("langJa").classList.toggle("active", state.language === "ja");
+      renderFilters();
+      renderCards();
+    }
+
+    function setLanguage(language) {
+      state.language = language;
+      localStorage.setItem("tabelogLanguage", language);
+      applyLanguage();
+    }
 
     function params() {
       const values = new URLSearchParams();
@@ -575,8 +684,8 @@ PUBLIC_HTML = r"""
     }
 
     function renderFilters() {
-      fillSelect($("area"), "全部地區", state.areas);
-      fillSelect($("category"), "全部分類", state.categories);
+      fillSelect($("area"), t("allAreas"), state.areas);
+      fillSelect($("category"), t("allCategories"), state.categories);
     }
 
     function fillSelect(select, label, values) {
@@ -592,12 +701,13 @@ PUBLIC_HTML = r"""
     }
 
     function renderCards() {
-      $("summary").textContent = `目前顯示 ${state.restaurants.length} 間餐廳`;
+      $("summary").textContent = t("summary", state.restaurants.length);
       $("grid").innerHTML = "";
       state.restaurants.forEach((restaurant) => {
         const card = document.createElement("article");
-        card.className = "card";
+        card.className = `card ${restaurant.image_url ? "has-image" : ""}`;
         card.innerHTML = `
+          ${restaurant.image_url ? `<img class="food-image" src="${escapeAttr(restaurant.image_url)}" alt="${escapeAttr(restaurant.name)}" onerror="this.remove()">` : ""}
           <h2>${escapeHtml(restaurant.name)}</h2>
           <div class="meta">ID ${restaurant.id} / ${escapeHtml(restaurant.category)} ${escapeHtml(restaurant.area || "")}</div>
           <div class="meta">${priceText(restaurant)}</div>
@@ -618,8 +728,8 @@ PUBLIC_HTML = r"""
 
     function priceText(restaurant) {
       const parts = [];
-      if (restaurant.lunch_budget_text) parts.push(`午餐 ${restaurant.lunch_budget_text}`);
-      if (restaurant.dinner_budget_text) parts.push(`晚餐 ${restaurant.dinner_budget_text}`);
+      if (restaurant.lunch_budget_text) parts.push(`${t("lunch")} ${restaurant.lunch_budget_text}`);
+      if (restaurant.dinner_budget_text) parts.push(`${t("dinner")} ${restaurant.dinner_budget_text}`);
       return escapeHtml(parts.join(" / "));
     }
 
@@ -648,6 +758,9 @@ PUBLIC_HTML = r"""
     $("keyword").addEventListener("input", debounce(loadRestaurants, 250));
     $("area").addEventListener("change", loadRestaurants);
     $("category").addEventListener("change", loadRestaurants);
+    $("langZh").addEventListener("click", () => setLanguage("zh"));
+    $("langJa").addEventListener("click", () => setLanguage("ja"));
+    applyLanguage();
     loadRestaurants();
   </script>
 </body>
@@ -785,6 +898,28 @@ ADMIN_HTML = r"""
       flex-wrap: wrap;
     }
 
+    .lang-switch {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .lang-switch button {
+      border: 0;
+      border-right: 1px solid var(--line);
+      border-radius: 0;
+      color: var(--muted);
+      padding: 8px 10px;
+    }
+
+    .lang-switch button:last-child { border-right: 0; }
+    .lang-switch button.active {
+      background: var(--accent);
+      color: #fff;
+    }
+
     .restaurant-list {
       display: grid;
       gap: 8px;
@@ -918,21 +1053,25 @@ ADMIN_HTML = r"""
 </head>
 <body>
   <header>
-    <h1>食べログ Bot 管理後台</h1>
+    <h1 data-i18n="adminTitle">食べログ Bot 管理後台</h1>
     <div class="actions">
-      <a class="nav-link" href="/">公開頁</a>
-      <button id="importSheet" class="primary">從 Google Sheet 匯入</button>
-      <button id="syncSheet">DB 同步到 Sheet</button>
-      <button id="reload">重新整理</button>
+      <div class="lang-switch" aria-label="Language">
+        <button id="adminLangZh" type="button">中文</button>
+        <button id="adminLangJa" type="button">日本語</button>
+      </div>
+      <a class="nav-link" href="/" data-i18n="publicPage">公開頁</a>
+      <button id="importSheet" class="primary" data-i18n="importSheet">從 Google Sheet 匯入</button>
+      <button id="syncSheet" data-i18n="syncSheet">DB 同步到 Sheet</button>
+      <button id="reload" data-i18n="reload">重新整理</button>
     </div>
   </header>
 
   <section id="loginPanel" class="login-panel">
     <div class="login-box">
-      <h2>管理密碼</h2>
-      <p>編輯、刪除、匯入與同步需要管理密碼。</p>
-      <input id="adminPassword" type="password" placeholder="輸入 ADMIN_PASSWORD">
-      <button id="loginButton" class="primary" type="button">進入管理後台</button>
+      <h2 data-i18n="adminPasswordTitle">管理密碼</h2>
+      <p data-i18n="adminPasswordHelp">編輯、刪除、匯入與同步需要管理密碼。</p>
+      <input id="adminPassword" type="password" data-i18n-placeholder="adminPasswordPlaceholder" placeholder="輸入 ADMIN_PASSWORD">
+      <button id="loginButton" class="primary" type="button" data-i18n="login">進入管理後台</button>
       <div id="loginMessage" class="message"></div>
     </div>
   </section>
@@ -940,7 +1079,7 @@ ADMIN_HTML = r"""
   <main>
     <section class="sidebar">
       <div class="toolbar">
-        <input id="keyword" placeholder="搜尋店名、分類、地區、評論">
+        <input id="keyword" data-i18n-placeholder="searchPlaceholder" placeholder="搜尋店名、分類、地區、評論">
         <select id="area"><option value="">全部地區</option></select>
         <select id="category"><option value="">全部分類</option></select>
       </div>
@@ -949,42 +1088,42 @@ ADMIN_HTML = r"""
     </section>
 
     <section class="editor">
-      <div id="empty" class="empty">從左邊選一間餐廳開始編輯。</div>
+      <div id="empty" class="empty" data-i18n="emptyEditor">從左邊選一間餐廳開始編輯。</div>
       <form id="editorForm" hidden>
         <div class="actions">
-          <button class="primary" type="submit">儲存修改</button>
-          <button class="danger" id="deleteRestaurant" type="button">刪除餐廳</button>
+          <button class="primary" type="submit" data-i18n="saveChanges">儲存修改</button>
+          <button class="danger" id="deleteRestaurant" type="button" data-i18n="deleteRestaurant">刪除餐廳</button>
         </div>
 
         <div class="form-grid">
-          <label>店名
+          <label><span data-i18n="name">店名</span>
             <input id="name" required>
           </label>
-          <label>分類
+          <label><span data-i18n="category">分類</span>
             <input id="categoryInput" required>
           </label>
-          <label>地區
+          <label><span data-i18n="area">地區</span>
             <input id="areaInput">
           </label>
-          <label>關鍵字，用逗號分隔
+          <label><span data-i18n="keywords">關鍵字，用逗號分隔</span>
             <input id="keywordsInput">
           </label>
-          <label>午餐價格
-            <input id="lunchBudget" placeholder="例：￥1,000～￥1,999">
+          <label><span data-i18n="lunchBudget">午餐價格</span>
+            <input id="lunchBudget" data-i18n-placeholder="lunchBudgetPlaceholder" placeholder="例：￥1,000～￥1,999">
           </label>
-          <label>晚餐價格
-            <input id="dinnerBudget" placeholder="例：￥2,000～￥2,999">
+          <label><span data-i18n="dinnerBudget">晚餐價格</span>
+            <input id="dinnerBudget" data-i18n-placeholder="dinnerBudgetPlaceholder" placeholder="例：￥2,000～￥2,999">
           </label>
-          <label>午餐最低
+          <label><span data-i18n="lunchMin">午餐最低</span>
             <input id="lunchMin" type="number" min="0" step="1">
           </label>
-          <label>午餐最高
+          <label><span data-i18n="lunchMax">午餐最高</span>
             <input id="lunchMax" type="number" min="0" step="1">
           </label>
-          <label>晚餐最低
+          <label><span data-i18n="dinnerMin">晚餐最低</span>
             <input id="dinnerMin" type="number" min="0" step="1">
           </label>
-          <label>晚餐最高
+          <label><span data-i18n="dinnerMax">晚餐最高</span>
             <input id="dinnerMax" type="number" min="0" step="1">
           </label>
           <label class="full">食べログ URL
@@ -993,16 +1132,19 @@ ADMIN_HTML = r"""
           <label class="full">Google Maps URL
             <input id="googleMapsUrl">
           </label>
-          <label class="full">評論
+          <label class="full"><span data-i18n="imageUrl">圖片 URL</span>
+            <input id="imageUrl">
+          </label>
+          <label class="full"><span data-i18n="comments">評論</span>
             <textarea id="comments"></textarea>
           </label>
         </div>
 
-        <label class="full">追加評論
-          <textarea id="newComment" placeholder="輸入要追加的評論，不會覆蓋原本內容"></textarea>
+        <label class="full"><span data-i18n="appendCommentTitle">追加評論</span>
+          <textarea id="newComment" data-i18n-placeholder="appendCommentPlaceholder" placeholder="輸入要追加的評論，不會覆蓋原本內容"></textarea>
         </label>
         <div class="actions" style="margin-top: 8px;">
-          <button id="appendComment" type="button">追加評論</button>
+          <button id="appendComment" type="button" data-i18n="appendComment">追加評論</button>
         </div>
         <div id="message" class="message"></div>
       </form>
@@ -1010,6 +1152,139 @@ ADMIN_HTML = r"""
   </main>
 
   <script>
+    const translations = {
+      zh: {
+        adminTitle: "食べログ Bot 管理後台",
+        publicPage: "公開頁",
+        importSheet: "從 Google Sheet 匯入",
+        syncSheet: "DB 同步到 Sheet",
+        reload: "重新整理",
+        createBackup: "立即備份 DB",
+        cleanupTaxonomy: "整理地區/分類",
+        adminPasswordTitle: "管理密碼",
+        adminPasswordHelp: "編輯、刪除、匯入與同步需要管理密碼。",
+        adminPasswordPlaceholder: "輸入 ADMIN_PASSWORD",
+        login: "進入管理後台",
+        searchPlaceholder: "搜尋店名、分類、地區、評論",
+        allAreas: "全部地區",
+        allCategories: "全部分類",
+        emptyEditor: "從左邊選一間餐廳開始編輯。",
+        saveChanges: "儲存修改",
+        deleteRestaurant: "刪除餐廳",
+        name: "店名",
+        category: "分類",
+        area: "地區",
+        keywords: "關鍵字，用逗號分隔",
+        lunchBudget: "午餐價格",
+        dinnerBudget: "晚餐價格",
+        lunchBudgetPlaceholder: "例：￥1,000～￥1,999",
+        dinnerBudgetPlaceholder: "例：￥2,000～￥2,999",
+        lunchMin: "午餐最低",
+        lunchMax: "午餐最高",
+        dinnerMin: "晚餐最低",
+        dinnerMax: "晚餐最高",
+        imageUrl: "圖片 URL",
+        comments: "評論",
+        appendCommentTitle: "追加評論",
+        appendCommentPlaceholder: "輸入要追加的評論，不會覆蓋原本內容",
+        appendComment: "追加評論",
+        count: (total) => `目前顯示 ${total} 間餐廳，ID 由小到大排列`,
+        prev: "上一頁",
+        next: "下一頁",
+        noComments: "目前沒有獨立評論紀錄。",
+        passwordNotConfigured: "尚未設定 ADMIN_PASSWORD。請先在 .env 裡加入管理密碼。",
+        saveFailed: "儲存失敗，請確認欄位內容。",
+        saved: "已儲存修改。",
+        appendFailed: "追加評論失敗。",
+        appended: "已追加評論。",
+        cleanupConfirm: "要把既有資料的地區與分類整理成統一格式嗎？",
+        cleaning: "整理中...",
+        cleanupFailed: "整理失敗",
+        cleanupDone: (count) => `已整理 ${count} 筆餐廳`,
+        backupConfirm: "要立即建立一份 SQLite 備份嗎？",
+        backingUp: "備份中...",
+        backupFailed: "備份失敗",
+        backupDone: (filename) => `已建立備份：${filename}`,
+        deleteConfirm: "確定要刪除這間餐廳嗎？這個動作不能復原。",
+        deleteFailed: "刪除失敗。",
+        importConfirm: "要把 Google Sheet 的資料匯入到本機資料庫嗎？同 ID 的餐廳會被 Sheet 內容更新。",
+        importing: "匯入中...",
+        importFailed: "匯入失敗",
+        importDone: (imported, skipped) => `已從 Google Sheet 匯入 ${imported} 筆，略過 ${skipped} 筆。`,
+        syncConfirm: "這會用目前資料庫內容覆蓋 Google Sheet。確定要繼續嗎？",
+        syncing: "同步中...",
+        syncFailed: "同步失敗",
+        syncDone: (count) => `已同步 ${count} 筆餐廳到 Google Sheet。`,
+        passwordRequired: "請輸入管理密碼。",
+        passwordWrong: "管理密碼錯誤。"
+      },
+      ja: {
+        adminTitle: "食べログ Bot 管理画面",
+        publicPage: "公開ページ",
+        importSheet: "Google Sheet から取り込み",
+        syncSheet: "DB を Sheet に同期",
+        reload: "再読み込み",
+        createBackup: "DB を今すぐバックアップ",
+        cleanupTaxonomy: "エリア/分類を整理",
+        adminPasswordTitle: "管理パスワード",
+        adminPasswordHelp: "編集・削除・取り込み・同期には管理パスワードが必要です。",
+        adminPasswordPlaceholder: "ADMIN_PASSWORD を入力",
+        login: "管理画面に入る",
+        searchPlaceholder: "店名・分類・エリア・コメントを検索",
+        allAreas: "すべてのエリア",
+        allCategories: "すべての分類",
+        emptyEditor: "左側からレストランを選択して編集を開始します。",
+        saveChanges: "変更を保存",
+        deleteRestaurant: "レストランを削除",
+        name: "店名",
+        category: "分類",
+        area: "エリア",
+        keywords: "キーワード（カンマ区切り）",
+        lunchBudget: "ランチ価格",
+        dinnerBudget: "ディナー価格",
+        lunchBudgetPlaceholder: "例：￥1,000～￥1,999",
+        dinnerBudgetPlaceholder: "例：￥2,000～￥2,999",
+        lunchMin: "ランチ最低額",
+        lunchMax: "ランチ最高額",
+        dinnerMin: "ディナー最低額",
+        dinnerMax: "ディナー最高額",
+        imageUrl: "画像 URL",
+        comments: "コメント",
+        appendCommentTitle: "コメントを追加",
+        appendCommentPlaceholder: "追加するコメントを入力します。既存の内容は上書きしません",
+        appendComment: "コメントを追加",
+        count: (total) => `${total} 件のレストランを表示中（ID 昇順）`,
+        prev: "前へ",
+        next: "次へ",
+        noComments: "独立したコメント記録はまだありません。",
+        passwordNotConfigured: "ADMIN_PASSWORD が未設定です。.env に管理パスワードを追加してください。",
+        saveFailed: "保存に失敗しました。入力内容を確認してください。",
+        saved: "変更を保存しました。",
+        appendFailed: "コメントの追加に失敗しました。",
+        appended: "コメントを追加しました。",
+        cleanupConfirm: "既存データのエリアと分類を統一形式に整理しますか？",
+        cleaning: "整理中...",
+        cleanupFailed: "整理に失敗しました",
+        cleanupDone: (count) => `${count} 件のレストランを整理しました`,
+        backupConfirm: "SQLite バックアップを今すぐ作成しますか？",
+        backingUp: "バックアップ中...",
+        backupFailed: "バックアップに失敗しました",
+        backupDone: (filename) => `バックアップを作成しました：${filename}`,
+        deleteConfirm: "このレストランを削除しますか？この操作は元に戻せません。",
+        deleteFailed: "削除に失敗しました。",
+        importConfirm: "Google Sheet のデータをローカル DB に取り込みますか？同じ ID のレストランは Sheet の内容で更新されます。",
+        importing: "取り込み中...",
+        importFailed: "取り込みに失敗しました",
+        importDone: (imported, skipped) => `Google Sheet から ${imported} 件取り込み、${skipped} 件スキップしました。`,
+        syncConfirm: "現在の DB 内容で Google Sheet を上書きします。続行しますか？",
+        syncing: "同期中...",
+        syncFailed: "同期に失敗しました",
+        syncDone: (count) => `${count} 件のレストランを Google Sheet に同期しました。`,
+        passwordRequired: "管理パスワードを入力してください。",
+        passwordWrong: "管理パスワードが違います。"
+      }
+    };
+    const savedLanguage = localStorage.getItem("tabelogLanguage");
     const state = {
       restaurants: [],
       selectedId: null,
@@ -1017,19 +1292,50 @@ ADMIN_HTML = r"""
       categories: [],
       page: 1,
       pageSize: 10,
+      language: savedLanguage || "zh",
       adminPassword: localStorage.getItem("tabelogAdminPassword") || ""
     };
 
     const $ = (id) => document.getElementById(id);
+    const t = (key, ...args) => {
+      const value = translations[state.language][key] || translations.zh[key] || key;
+      return typeof value === "function" ? value(...args) : value;
+    };
+
+    function applyLanguage() {
+      document.documentElement.lang = state.language === "ja" ? "ja" : "zh-Hant";
+      document.querySelectorAll("[data-i18n]").forEach((element) => {
+        element.textContent = t(element.dataset.i18n);
+      });
+      document.querySelectorAll("[data-i18n-placeholder]").forEach((element) => {
+        element.placeholder = t(element.dataset.i18nPlaceholder);
+      });
+      $("adminLangZh").classList.toggle("active", state.language === "zh");
+      $("adminLangJa").classList.toggle("active", state.language === "ja");
+      backupButton.textContent = t("createBackup");
+      cleanupButton.textContent = t("cleanupTaxonomy");
+      renderFilters();
+      renderList();
+      if (!$("editorForm").hidden && state.selectedId) {
+        setMessage($("message").textContent);
+      }
+    }
+
+    function setLanguage(language) {
+      state.language = language;
+      localStorage.setItem("tabelogLanguage", language);
+      applyLanguage();
+    }
+
     const backupButton = document.createElement("button");
     backupButton.id = "createBackup";
     backupButton.type = "button";
-    backupButton.textContent = "立即備份 DB";
+    backupButton.textContent = t("createBackup");
     $("reload").insertAdjacentElement("beforebegin", backupButton);
     const cleanupButton = document.createElement("button");
     cleanupButton.id = "cleanupTaxonomy";
     cleanupButton.type = "button";
-    cleanupButton.textContent = "整理地區/分類";
+    cleanupButton.textContent = t("cleanupTaxonomy");
     backupButton.insertAdjacentElement("beforebegin", cleanupButton);
     const commentItems = document.createElement("div");
     commentItems.id = "commentItems";
@@ -1064,7 +1370,7 @@ ADMIN_HTML = r"""
     async function initAdminAuth() {
       const status = await fetch("/api/admin/status").then((response) => response.json());
       if (!status.password_configured) {
-        setLoginMessage("尚未設定 ADMIN_PASSWORD。請先在 .env 裡加入管理密碼。", true);
+        setLoginMessage(t("passwordNotConfigured"), true);
         return;
       }
       if (state.adminPassword && await checkAdminPassword()) {
@@ -1099,8 +1405,8 @@ ADMIN_HTML = r"""
     }
 
     function renderFilters() {
-      fillSelect($("area"), "全部地區", state.areas);
-      fillSelect($("category"), "全部分類", state.categories);
+      fillSelect($("area"), t("allAreas"), state.areas);
+      fillSelect($("category"), t("allCategories"), state.categories);
     }
 
     function fillSelect(select, label, values) {
@@ -1122,11 +1428,11 @@ ADMIN_HTML = r"""
       const pageItems = state.restaurants.slice(start, start + state.pageSize);
 
       $("count").innerHTML = `
-        <span>目前顯示 ${total} 間餐廳，ID 由小到大排列</span>
+        <span>${escapeHtml(t("count", total))}</span>
         <span class="pager">
-          <button id="prevListPage" type="button" ${state.page <= 1 ? "disabled" : ""}>上一頁</button>
+          <button id="prevListPage" type="button" ${state.page <= 1 ? "disabled" : ""}>${escapeHtml(t("prev"))}</button>
           <span>${state.page} / ${maxPage}</span>
-          <button id="nextListPage" type="button" ${state.page >= maxPage ? "disabled" : ""}>下一頁</button>
+          <button id="nextListPage" type="button" ${state.page >= maxPage ? "disabled" : ""}>${escapeHtml(t("next"))}</button>
         </span>
       `;
       $("prevListPage").addEventListener("click", () => {
@@ -1170,6 +1476,7 @@ ADMIN_HTML = r"""
       $("dinnerMax").value = restaurant.dinner_budget_max || "";
       $("tabelogUrl").value = restaurant.tabelog_url || "";
       $("googleMapsUrl").value = restaurant.google_maps_url || "";
+      $("imageUrl").value = restaurant.image_url || "";
       $("comments").value = restaurant.comments || "";
       renderCommentItems(restaurant.comment_items || []);
       $("newComment").value = "";
@@ -1191,6 +1498,7 @@ ADMIN_HTML = r"""
         area: $("areaInput").value.trim() || null,
         tabelog_url: $("tabelogUrl").value.trim() || null,
         google_maps_url: $("googleMapsUrl").value.trim() || null,
+        image_url: $("imageUrl").value.trim() || null,
         comments: $("comments").value.trim(),
         keywords: $("keywordsInput").value.split(",").map((item) => item.trim()).filter(Boolean),
         tags: $("keywordsInput").value.split(",").map((item) => item.trim()).filter(Boolean),
@@ -1210,7 +1518,7 @@ ADMIN_HTML = r"""
 
     function renderCommentItems(items) {
       if (!items.length) {
-        $("commentItems").innerHTML = "目前沒有獨立評論紀錄。";
+        $("commentItems").innerHTML = escapeHtml(t("noComments"));
         return;
       }
       $("commentItems").innerHTML = items.map((item) => `
@@ -1231,10 +1539,10 @@ ADMIN_HTML = r"""
         body: JSON.stringify(editorPayload())
       });
       if (!response.ok) {
-        setMessage("儲存失敗，請確認欄位內容。", true);
+        setMessage(t("saveFailed"), true);
         return;
       }
-      setMessage("已儲存修改。");
+      setMessage(t("saved"));
       await loadRestaurants();
     });
 
@@ -1246,66 +1554,66 @@ ADMIN_HTML = r"""
         body: JSON.stringify({comment: $("newComment").value.trim(), created_by: "Admin"})
       });
       if (!response.ok) {
-        setMessage("追加評論失敗。", true);
+        setMessage(t("appendFailed"), true);
         return;
       }
       const restaurant = await response.json();
       $("comments").value = restaurant.comments || "";
       renderCommentItems(restaurant.comment_items || []);
       $("newComment").value = "";
-      setMessage("已追加評論。");
+      setMessage(t("appended"));
     });
 
     cleanupButton.addEventListener("click", async () => {
-      if (!confirm("要把既有資料的地區與分類整理成統一格式嗎？")) return;
+      if (!confirm(t("cleanupConfirm"))) return;
       cleanupButton.disabled = true;
-      cleanupButton.textContent = "整理中...";
+      cleanupButton.textContent = t("cleaning");
       try {
         const response = await fetch("/api/cleanup-taxonomy", {
           method: "POST",
           headers: {"X-Admin-Password": state.adminPassword}
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || "整理失敗");
-        alert(`已整理 ${data.changed} 筆餐廳`);
+        if (!response.ok) throw new Error(data.detail || t("cleanupFailed"));
+        alert(t("cleanupDone", data.changed));
         await loadRestaurants();
       } catch (error) {
         alert(error.message);
       } finally {
         cleanupButton.disabled = false;
-        cleanupButton.textContent = "整理地區/分類";
+        cleanupButton.textContent = t("cleanupTaxonomy");
       }
     });
 
     backupButton.addEventListener("click", async () => {
-      if (!confirm("要立即建立一份 SQLite 備份嗎？")) return;
+      if (!confirm(t("backupConfirm"))) return;
       backupButton.disabled = true;
-      backupButton.textContent = "備份中...";
+      backupButton.textContent = t("backingUp");
       try {
         const response = await fetch("/api/backups", {
           method: "POST",
           headers: {"X-Admin-Password": state.adminPassword}
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || "備份失敗");
-        alert(`已建立備份：${data.filename}`);
+        if (!response.ok) throw new Error(data.detail || t("backupFailed"));
+        alert(t("backupDone", data.filename));
       } catch (error) {
         alert(error.message);
       } finally {
         backupButton.disabled = false;
-        backupButton.textContent = "立即備份 DB";
+        backupButton.textContent = t("createBackup");
       }
     });
 
     $("deleteRestaurant").addEventListener("click", async () => {
       if (!state.selectedId) return;
-      if (!confirm("確定要刪除這間餐廳嗎？這個動作不能復原。")) return;
+      if (!confirm(t("deleteConfirm"))) return;
       const response = await fetch(`/api/restaurants/${state.selectedId}`, {
         method: "DELETE",
         headers: {"X-Admin-Password": state.adminPassword}
       });
       if (!response.ok) {
-        setMessage("刪除失敗。", true);
+        setMessage(t("deleteFailed"), true);
         return;
       }
       clearEditor();
@@ -1313,46 +1621,46 @@ ADMIN_HTML = r"""
     });
 
     $("importSheet").addEventListener("click", async () => {
-      if (!confirm("要把 Google Sheet 的資料匯入到本機資料庫嗎？同 ID 的餐廳會被 Sheet 內容更新。")) return;
+      if (!confirm(t("importConfirm"))) return;
       const button = $("importSheet");
       button.disabled = true;
-      button.textContent = "匯入中...";
+      button.textContent = t("importing");
       try {
         const response = await fetch("/api/import-sheet", {
           method: "POST",
           headers: {"X-Admin-Password": state.adminPassword}
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || "匯入失敗");
-        alert(`已從 Google Sheet 匯入 ${data.imported} 筆，略過 ${data.skipped} 筆。`);
+        if (!response.ok) throw new Error(data.detail || t("importFailed"));
+        alert(t("importDone", data.imported, data.skipped));
         clearEditor();
         await loadRestaurants();
       } catch (error) {
         alert(error.message);
       } finally {
         button.disabled = false;
-        button.textContent = "從 Google Sheet 匯入";
+        button.textContent = t("importSheet");
       }
     });
 
     $("syncSheet").addEventListener("click", async () => {
-      if (!confirm("這會用目前資料庫內容覆蓋 Google Sheet。確定要繼續嗎？")) return;
+      if (!confirm(t("syncConfirm"))) return;
       const button = $("syncSheet");
       button.disabled = true;
-      button.textContent = "同步中...";
+      button.textContent = t("syncing");
       try {
         const response = await fetch("/api/sync-sheet", {
           method: "POST",
           headers: {"X-Admin-Password": state.adminPassword}
         });
         const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || "同步失敗");
-        alert(`已同步 ${data.count} 筆餐廳到 Google Sheet。`);
+        if (!response.ok) throw new Error(data.detail || t("syncFailed"));
+        alert(t("syncDone", data.count));
       } catch (error) {
         alert(error.message);
       } finally {
         button.disabled = false;
-        button.textContent = "DB 同步到 Sheet";
+        button.textContent = t("syncSheet");
       }
     });
 
@@ -1360,11 +1668,11 @@ ADMIN_HTML = r"""
     $("loginButton").addEventListener("click", async () => {
       state.adminPassword = $("adminPassword").value;
       if (!state.adminPassword) {
-        setLoginMessage("請輸入管理密碼。", true);
+        setLoginMessage(t("passwordRequired"), true);
         return;
       }
       if (!await checkAdminPassword()) {
-        setLoginMessage("管理密碼錯誤。", true);
+        setLoginMessage(t("passwordWrong"), true);
         return;
       }
       localStorage.setItem("tabelogAdminPassword", state.adminPassword);
@@ -1384,6 +1692,8 @@ ADMIN_HTML = r"""
       state.page = 1;
       loadRestaurants();
     });
+    $("adminLangZh").addEventListener("click", () => setLanguage("zh"));
+    $("adminLangJa").addEventListener("click", () => setLanguage("ja"));
 
     function debounce(fn, delay) {
       let timer = null;
@@ -1403,6 +1713,7 @@ ADMIN_HTML = r"""
       }[char]));
     }
 
+    applyLanguage();
     initAdminAuth();
     loadRestaurants();
   </script>

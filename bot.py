@@ -444,6 +444,7 @@ async def save_extracted_restaurant(
         source_channel_id=interaction.channel_id or 0,
         source_message_id=source_message_id,
         created_by=interaction.user.display_name,
+        image_url=result.image_url,
         lunch_budget_text=result.lunch_budget_text,
         lunch_budget_min=result.lunch_budget_min,
         lunch_budget_max=result.lunch_budget_max,
@@ -1066,6 +1067,7 @@ async def edit_restaurant(
         google_maps_url=google_maps_url if google_maps_url is not None else restaurant.google_maps_url,
         comments=comments if comments is not None else restaurant.comments,
         keywords=parse_keywords(keywords) if keywords is not None else restaurant.keywords,
+        image_url=restaurant.image_url,
     )
     await interaction.response.send_message(
         "已更新餐廳資料。",
@@ -1189,6 +1191,7 @@ async def export_map_csv(interaction: discord.Interaction) -> None:
             "name",
             "category",
             "area",
+            "image_url",
             "google_maps_url",
             "tabelog_url",
             "comments",
@@ -1201,6 +1204,7 @@ async def export_map_csv(interaction: discord.Interaction) -> None:
                 restaurant.name,
                 restaurant.category,
                 restaurant.area or "",
+                restaurant.image_url or "",
                 restaurant.google_maps_url or "",
                 restaurant.tabelog_url or "",
                 restaurant.comments,
@@ -1449,6 +1453,8 @@ def restaurant_embed(restaurant: Restaurant) -> discord.Embed:
         embed.add_field(name="食べログ", value=restaurant.tabelog_url, inline=False)
     if restaurant.google_maps_url:
         embed.add_field(name="Google Maps", value=restaurant.google_maps_url, inline=False)
+    if restaurant.image_url:
+        embed.set_thumbnail(url=restaurant.image_url)
     price_lines = []
     if restaurant.lunch_budget_text:
         price_lines.append(f"午餐：{restaurant.lunch_budget_text}")
