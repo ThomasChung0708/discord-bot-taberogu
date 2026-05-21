@@ -689,6 +689,18 @@ class RestaurantDB:
             ).fetchall()
         return [self._row_to_restaurant(row) for row in rows]
 
+    def update_image_url(self, restaurant_id: int, image_url: str | None) -> Restaurant | None:
+        """只更新一間餐廳的圖片 URL。"""
+
+        with self.session() as conn:
+            cur = conn.execute(
+                "UPDATE restaurants SET image_url = ? WHERE id = ?",
+                (image_url.strip() if image_url and image_url.strip() else None, restaurant_id),
+            )
+            if cur.rowcount == 0:
+                return None
+        return self.get(restaurant_id)
+
     def delete_restaurant(self, restaurant_id: int) -> bool:
         """刪除一間餐廳。管理後台刪錯資料時會用到。"""
 

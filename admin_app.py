@@ -17,12 +17,14 @@ SQLite 資料庫。它的目標不是取代 Discord 操作，而是補上管理�
 
 import os
 import sqlite3
+import uuid
 from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, Header, HTTPException, FastAPI
+from fastapi import Depends, Header, HTTPException, FastAPI, Request
 from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from db import Restaurant, RestaurantDB
@@ -51,9 +53,23 @@ BACKUP_DIR = Path(BACKUP_DIR_VALUE)
 if not BACKUP_DIR.is_absolute():
     BACKUP_DIR = BASE_DIR / BACKUP_DIR
 BACKUP_KEEP = int(os.getenv("BACKUP_KEEP", "14"))
+UPLOAD_DIR_VALUE = os.getenv("UPLOAD_DIR", "uploads").strip() or "uploads"
+UPLOAD_DIR = Path(UPLOAD_DIR_VALUE)
+if not UPLOAD_DIR.is_absolute():
+    UPLOAD_DIR = BASE_DIR / UPLOAD_DIR
+RESTAURANT_IMAGE_DIR = UPLOAD_DIR / "restaurants"
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+ALLOWED_IMAGE_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
 
 db = RestaurantDB(str(DB_PATH))
 app = FastAPI(title="Discord 食べログ Bot Admin")
+RESTAURANT_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
 
 class RestaurantPayload(BaseModel):
@@ -257,6 +273,36 @@ def append_comment(
         comment=payload.comment,
         created_by=payload.created_by,
     )
+    if not restaurant:
+        raise HTTPException(status_code=404, detail="找不到這間餐廳")
+    return restaurant_to_dict(restaurant)
+
+
+@app.post("/api/restaurants/{restaurant_id}/image")
+async def upload_restaurant_image(
+    restaurant_id: int,
+    request: Request,
+    _: None = Depends(require_admin),
+) -> dict:
+    """Upload a local image for one restaurant and store its public URL."""
+
+    if not db.get(restaurant_id):
+        raise HTTPException(status_code=404, detail="找不到這間餐廳")
+    content_type = (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+    suffix = ALLOWED_IMAGE_TYPES.get(content_type)
+    if not suffix:
+        raise HTTPException(status_code=400, detail="只支援 JPG、PNG、WEBP、GIF 圖片")
+
+    data = await request.body()
+    if not data:
+        raise HTTPException(status_code=400, detail="沒有收到圖片資料")
+    if len(data) > MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=400, detail="圖片不能超過 5 MB")
+    filename = f"restaurant-{restaurant_id}-{uuid.uuid4().hex}{suffix}"
+    path = RESTAURANT_IMAGE_DIR / filename
+    path.write_bytes(data)
+
+    restaurant = db.update_image_url(restaurant_id, f"/uploads/restaurants/{filename}")
     if not restaurant:
         raise HTTPException(status_code=404, detail="找不到這間餐廳")
     return restaurant_to_dict(restaurant)
@@ -1000,6 +1046,29 @@ ADMIN_HTML = r"""
     label span { color: var(--muted); }
     label.full { grid-column: 1 / -1; }
 
+    .image-upload {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .image-upload input[type="file"] {
+      flex: 1;
+      min-width: 220px;
+    }
+
+    .image-preview {
+      width: 120px;
+      height: 90px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      object-fit: cover;
+      background: #edf5f3;
+    }
+
+    .image-preview[hidden] { display: none; }
+
     .empty {
       border: 1px dashed var(--line);
       border-radius: 8px;
@@ -1135,6 +1204,13 @@ ADMIN_HTML = r"""
           <label class="full"><span data-i18n="imageUrl">圖片 URL</span>
             <input id="imageUrl">
           </label>
+          <label class="full"><span data-i18n="uploadImage">上傳圖片</span>
+            <div class="image-upload">
+              <input id="imageFile" type="file" accept="image/jpeg,image/png,image/webp,image/gif">
+              <button id="uploadImage" type="button" data-i18n="uploadImageButton">上傳圖片</button>
+              <img id="imagePreview" class="image-preview" alt="" hidden>
+            </div>
+          </label>
           <label class="full"><span data-i18n="comments">評論</span>
             <textarea id="comments"></textarea>
           </label>
@@ -1184,6 +1260,9 @@ ADMIN_HTML = r"""
         dinnerMin: "晚餐最低",
         dinnerMax: "晚餐最高",
         imageUrl: "圖片 URL",
+        uploadImage: "上傳圖片",
+        uploadImageButton: "上傳圖片",
+        uploadingImage: "上傳中...",
         comments: "評論",
         appendCommentTitle: "追加評論",
         appendCommentPlaceholder: "輸入要追加的評論，不會覆蓋原本內容",
@@ -1197,6 +1276,9 @@ ADMIN_HTML = r"""
         saved: "已儲存修改。",
         appendFailed: "追加評論失敗。",
         appended: "已追加評論。",
+        chooseImage: "請先選擇圖片。",
+        imageUploaded: "已上傳圖片。",
+        imageUploadFailed: "圖片上傳失敗。",
         cleanupConfirm: "要把既有資料的地區與分類整理成統一格式嗎？",
         cleaning: "整理中...",
         cleanupFailed: "整理失敗",
@@ -1249,6 +1331,9 @@ ADMIN_HTML = r"""
         dinnerMin: "ディナー最低額",
         dinnerMax: "ディナー最高額",
         imageUrl: "画像 URL",
+        uploadImage: "画像をアップロード",
+        uploadImageButton: "画像をアップロード",
+        uploadingImage: "アップロード中...",
         comments: "コメント",
         appendCommentTitle: "コメントを追加",
         appendCommentPlaceholder: "追加するコメントを入力します。既存の内容は上書きしません",
@@ -1262,6 +1347,9 @@ ADMIN_HTML = r"""
         saved: "変更を保存しました。",
         appendFailed: "コメントの追加に失敗しました。",
         appended: "コメントを追加しました。",
+        chooseImage: "先に画像を選択してください。",
+        imageUploaded: "画像をアップロードしました。",
+        imageUploadFailed: "画像のアップロードに失敗しました。",
         cleanupConfirm: "既存データのエリアと分類を統一形式に整理しますか？",
         cleaning: "整理中...",
         cleanupFailed: "整理に失敗しました",
@@ -1477,6 +1565,8 @@ ADMIN_HTML = r"""
       $("tabelogUrl").value = restaurant.tabelog_url || "";
       $("googleMapsUrl").value = restaurant.google_maps_url || "";
       $("imageUrl").value = restaurant.image_url || "";
+      $("imageFile").value = "";
+      renderImagePreview(restaurant.image_url || "");
       $("comments").value = restaurant.comments || "";
       renderCommentItems(restaurant.comment_items || []);
       $("newComment").value = "";
@@ -1484,10 +1574,22 @@ ADMIN_HTML = r"""
       renderList();
     }
 
+    function renderImagePreview(url) {
+      if (!url) {
+        $("imagePreview").hidden = true;
+        $("imagePreview").removeAttribute("src");
+        return;
+      }
+      $("imagePreview").src = url;
+      $("imagePreview").hidden = false;
+    }
+
     function clearEditor() {
       state.selectedId = null;
       $("empty").hidden = false;
       $("editorForm").hidden = true;
+      $("imageFile").value = "";
+      renderImagePreview("");
       renderList();
     }
 
@@ -1562,6 +1664,45 @@ ADMIN_HTML = r"""
       renderCommentItems(restaurant.comment_items || []);
       $("newComment").value = "";
       setMessage(t("appended"));
+    });
+
+    $("imageUrl").addEventListener("input", () => {
+      renderImagePreview($("imageUrl").value.trim());
+    });
+
+    $("uploadImage").addEventListener("click", async () => {
+      if (!state.selectedId) return;
+      const file = $("imageFile").files[0];
+      if (!file) {
+        setMessage(t("chooseImage"), true);
+        return;
+      }
+      const button = $("uploadImage");
+      button.disabled = true;
+      button.textContent = t("uploadingImage");
+      try {
+        const data = await file.arrayBuffer();
+        const response = await fetch(`/api/restaurants/${state.selectedId}/image`, {
+          method: "POST",
+          headers: {
+            "X-Admin-Password": state.adminPassword,
+            "Content-Type": file.type
+          },
+          body: data
+        });
+        const restaurant = await response.json();
+        if (!response.ok) throw new Error(restaurant.detail || t("imageUploadFailed"));
+        $("imageUrl").value = restaurant.image_url || "";
+        $("imageFile").value = "";
+        renderImagePreview(restaurant.image_url || "");
+        setMessage(t("imageUploaded"));
+        await loadRestaurants();
+      } catch (error) {
+        setMessage(error.message, true);
+      } finally {
+        button.disabled = false;
+        button.textContent = t("uploadImageButton");
+      }
     });
 
     cleanupButton.addEventListener("click", async () => {
