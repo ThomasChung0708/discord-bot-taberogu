@@ -305,19 +305,6 @@ async def on_message(message: discord.Message) -> None:
         await message.reply("請在提到我後面加上關鍵字，例如：@食べログBOT 拉麵", mention_author=False)
         return
 
-    if keyword in {"更新地圖", "同步地圖", "更新Google地圖", "更新 Google 地圖"}:
-        await sync_google_sheet_from_message(message)
-        return
-    if keyword in {"地圖", "共享地圖", "餐廳地圖", "美食地圖"}:
-        await send_map_url(message)
-        return
-    if keyword in {"網頁", "網站", "公開頁", "餐廳網頁", "美食網頁", "web", "website"}:
-        await send_public_web_url(message)
-        return
-    if is_enrich_prices_message(keyword):
-        await enrich_prices_from_message(message, keyword)
-        return
-
     recommendation_request = parse_recommendation_request(keyword)
     if recommendation_request is not None:
         await send_recommendations(message, recommendation_request)
@@ -1000,7 +987,6 @@ async def send_search_results(
     )
 
 
-@client.tree.command(name="list_restaurants", description="列出目前已儲存的餐廳與 ID")
 async def list_restaurants(interaction: discord.Interaction) -> None:
     """列出目前資料庫裡的餐廳與 ID，方便除錯與手動操作。"""
 
@@ -1022,7 +1008,6 @@ async def list_restaurants(interaction: discord.Interaction) -> None:
     )
 
 
-@client.tree.command(name="edit_restaurant", description="編輯已儲存餐廳資料")
 @app_commands.describe(
     restaurant_id="要編輯的餐廳 ID",
     name="新的店名，留空代表不修改",
@@ -1076,7 +1061,6 @@ async def edit_restaurant(
     )
 
 
-@client.tree.command(name="delete_restaurant", description="刪除已儲存餐廳")
 @app_commands.describe(
     restaurant_id="要刪除的餐廳 ID",
     confirm="安全確認：請選 True 才會真的刪除",
@@ -1113,7 +1097,6 @@ async def delete_restaurant(
     )
 
 
-@client.tree.command(name="add_comment", description="把指定訊息區間追加成某間餐廳的評論")
 @app_commands.describe(
     restaurant="餐廳 ID 或關鍵字。若關鍵字找到多筆，請改用餐廳 ID",
     start_message="開始訊息的 ID 或訊息連結",
@@ -1175,7 +1158,6 @@ async def add_comment(
     )
 
 
-@client.tree.command(name="export_map_csv", description="匯出餐廳 CSV，可匯入 Google My Maps")
 async def export_map_csv(interaction: discord.Interaction) -> None:
     """把餐廳資料匯出成 CSV，作為 My Maps 的手動備援方案。"""
 
@@ -1221,7 +1203,6 @@ async def export_map_csv(interaction: discord.Interaction) -> None:
     )
 
 
-@client.tree.command(name="sync_google_sheet", description="把目前餐廳資料同步到 Google Sheet")
 async def sync_google_sheet(interaction: discord.Interaction) -> None:
     """slash command：同步 SQLite 餐廳資料到 Google Sheet。"""
 
@@ -1229,7 +1210,6 @@ async def sync_google_sheet(interaction: discord.Interaction) -> None:
     await sync_google_sheet_to_discord(interaction)
 
 
-@client.tree.command(name="backup_db", description="備份目前餐廳資料庫")
 async def backup_db(interaction: discord.Interaction) -> None:
     """把目前 SQLite 資料庫備份成檔案傳回 Discord。
 
@@ -1254,7 +1234,6 @@ async def backup_db(interaction: discord.Interaction) -> None:
         backup_path.unlink(missing_ok=True)
 
 
-@client.tree.command(name="enrich_prices", description="慢慢補抓食べログ午餐/晚餐價格")
 @app_commands.describe(limit="這次最多補幾間，建議 5。最大 20")
 async def enrich_prices(interaction: discord.Interaction, limit: int = 5) -> None:
     """從已保存的食べログ URL 補抓價格資訊。"""
@@ -1343,7 +1322,6 @@ async def send_map_url(message: discord.Message) -> None:
     )
 
 
-@client.tree.command(name="web", description="顯示餐廳公開網頁網址")
 async def web(interaction: discord.Interaction) -> None:
     """slash command：顯示公開餐廳網頁。"""
 

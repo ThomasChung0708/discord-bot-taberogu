@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from db import Restaurant, RestaurantDB
+from extractor import fetch_tabelog_price_info
 from sheets_sync import read_restaurants_from_sheet, sync_restaurants_to_sheet
 
 
@@ -90,6 +91,10 @@ class RestaurantPayload(BaseModel):
     dinner_budget_text: str | None = None
     dinner_budget_min: int | None = None
     dinner_budget_max: int | None = None
+
+
+class EnrichPricesPayload(BaseModel):
+    limit: int = Field(default=5, ge=1, le=20)
 
 
 class CommentPayload(BaseModel):
@@ -372,6 +377,43 @@ def cleanup_taxonomy(_: None = Depends(require_admin)) -> dict:
 
     changed = db.cleanup_area_categories()
     return {"ok": True, "changed": changed}
+
+
+@app.post("/api/enrich-prices")
+def enrich_prices(payload: EnrichPricesPayload, _: None = Depends(require_admin)) -> dict:
+    """Fetch missing lunch/dinner prices from saved Tabelog URLs."""
+
+    restaurants = db.restaurants_missing_prices(limit=payload.limit)
+    updated: list[str] = []
+    not_found: list[str] = []
+    for restaurant in restaurants:
+        price = fetch_tabelog_price_info(restaurant.tabelog_url)
+        if not price.price_updated_at:
+            not_found.append(restaurant.name)
+            continue
+        db.update_price_info(
+            restaurant_id=restaurant.id,
+            lunch_budget_text=price.lunch_budget_text,
+            lunch_budget_min=price.lunch_budget_min,
+            lunch_budget_max=price.lunch_budget_max,
+            dinner_budget_text=price.dinner_budget_text,
+            dinner_budget_min=price.dinner_budget_min,
+            dinner_budget_max=price.dinner_budget_max,
+            price_updated_at=price.price_updated_at,
+        )
+        updated.append(
+            f"ID {restaurant.id}: {restaurant.name} "
+            f"午餐 {price.lunch_budget_text or '-'} / 晚餐 {price.dinner_budget_text or '-'}"
+        )
+
+    return {
+        "ok": True,
+        "checked": len(restaurants),
+        "updated": len(updated),
+        "not_found": len(not_found),
+        "updated_items": updated[:10],
+        "not_found_items": not_found[:10],
+    }
 
 
 @app.post("/api/backups")
@@ -1237,6 +1279,7 @@ ADMIN_HTML = r"""
         reload: "重新整理",
         createBackup: "立即備份 DB",
         cleanupTaxonomy: "整理地區/分類",
+        enrichPrices: "補抓價格",
         adminPasswordTitle: "管理密碼",
         adminPasswordHelp: "編輯、刪除、匯入與同步需要管理密碼。",
         adminPasswordPlaceholder: "輸入 ADMIN_PASSWORD",
@@ -1283,6 +1326,10 @@ ADMIN_HTML = r"""
         cleaning: "整理中...",
         cleanupFailed: "整理失敗",
         cleanupDone: (count) => `已整理 ${count} 筆餐廳`,
+        enrichConfirm: "要從食べログ慢慢補抓最多 5 筆缺少的價格嗎？",
+        enriching: "補抓中...",
+        enrichFailed: "補抓價格失敗",
+        enrichDone: (updated, checked) => `已檢查 ${checked} 筆，更新 ${updated} 筆價格。`,
         backupConfirm: "要立即建立一份 SQLite 備份嗎？",
         backingUp: "備份中...",
         backupFailed: "備份失敗",
@@ -1308,6 +1355,7 @@ ADMIN_HTML = r"""
         reload: "再読み込み",
         createBackup: "DB を今すぐバックアップ",
         cleanupTaxonomy: "エリア/分類を整理",
+        enrichPrices: "価格を補完",
         adminPasswordTitle: "管理パスワード",
         adminPasswordHelp: "編集・削除・取り込み・同期には管理パスワードが必要です。",
         adminPasswordPlaceholder: "ADMIN_PASSWORD を入力",
@@ -1354,6 +1402,10 @@ ADMIN_HTML = r"""
         cleaning: "整理中...",
         cleanupFailed: "整理に失敗しました",
         cleanupDone: (count) => `${count} 件のレストランを整理しました`,
+        enrichConfirm: "食べログから価格未入力の店を最大 5 件補完しますか？",
+        enriching: "補完中...",
+        enrichFailed: "価格補完に失敗しました",
+        enrichDone: (updated, checked) => `${checked} 件を確認し、${updated} 件の価格を更新しました。`,
         backupConfirm: "SQLite バックアップを今すぐ作成しますか？",
         backingUp: "バックアップ中...",
         backupFailed: "バックアップに失敗しました",
@@ -1402,6 +1454,7 @@ ADMIN_HTML = r"""
       $("adminLangJa").classList.toggle("active", state.language === "ja");
       backupButton.textContent = t("createBackup");
       cleanupButton.textContent = t("cleanupTaxonomy");
+      enrichButton.textContent = t("enrichPrices");
       renderFilters();
       renderList();
       if (!$("editorForm").hidden && state.selectedId) {
@@ -1425,6 +1478,11 @@ ADMIN_HTML = r"""
     cleanupButton.type = "button";
     cleanupButton.textContent = t("cleanupTaxonomy");
     backupButton.insertAdjacentElement("beforebegin", cleanupButton);
+    const enrichButton = document.createElement("button");
+    enrichButton.id = "enrichPrices";
+    enrichButton.type = "button";
+    enrichButton.textContent = t("enrichPrices");
+    cleanupButton.insertAdjacentElement("beforebegin", enrichButton);
     const commentItems = document.createElement("div");
     commentItems.id = "commentItems";
     commentItems.className = "status";
@@ -1723,6 +1781,28 @@ ADMIN_HTML = r"""
       } finally {
         cleanupButton.disabled = false;
         cleanupButton.textContent = t("cleanupTaxonomy");
+      }
+    });
+
+    enrichButton.addEventListener("click", async () => {
+      if (!confirm(t("enrichConfirm"))) return;
+      enrichButton.disabled = true;
+      enrichButton.textContent = t("enriching");
+      try {
+        const response = await fetch("/api/enrich-prices", {
+          method: "POST",
+          headers: adminHeaders(),
+          body: JSON.stringify({limit: 5})
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || t("enrichFailed"));
+        alert(t("enrichDone", data.updated, data.checked));
+        await loadRestaurants();
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        enrichButton.disabled = false;
+        enrichButton.textContent = t("enrichPrices");
       }
     });
 
