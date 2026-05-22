@@ -759,15 +759,28 @@ async def send_recommendations(target: discord.Message, request: str) -> None:
 def build_recommendation_response(request: str, memory_context: str = "") -> str:
     """Build a recommendation message without inventing restaurants."""
 
-    candidates = recommendation_candidates(request, memory_context=memory_context, limit=10)
+    intent = infer_recommendation_intent(request, memory_context=memory_context)
+    candidates = recommendation_candidates(
+        request,
+        memory_context=memory_context,
+        intent=intent,
+        limit=10,
+    )
     if not candidates:
+        understood = intent.get("summary") or "、".join(intent_search_terms(intent)) or request
         return (
-            f"目前沒有找到符合「{request}」的已儲存餐廳。\n"
+            f"目前沒有找到符合「{understood}」的已儲存餐廳。\n"
             "可以先試試比較短的關鍵字，例如：`@食べログBOT 拉麵` 或 `@食べログBOT 找 新宿 拉麵`。"
         )
 
-    ranked = rank_recommendations_with_ai(request, candidates, memory_context=memory_context)
-    lines = [f"從 DB 裡幫你挑了 {len(ranked)} 間「{request}」候選："]
+    ranked = rank_recommendations_with_ai(
+        request,
+        candidates,
+        memory_context=memory_context,
+        intent=intent,
+    )
+    understood = intent.get("summary") or request
+    lines = [f"我理解成「{understood}」，從 DB 裡幫你挑了 {len(ranked)} 間候選："]
     for index, (restaurant, reason) in enumerate(ranked, start=1):
         price = recommendation_price_text(restaurant)
         lines.append(
@@ -790,17 +803,25 @@ def build_recommendation_response(request: str, memory_context: str = "") -> str
 def recommendation_candidates(
     request: str,
     memory_context: str = "",
+    intent: dict[str, object] | None = None,
     limit: int = 10,
 ) -> list[Restaurant]:
     """Score saved restaurants against a natural language request."""
 
     restaurants = db.all()
     scored: list[tuple[int, int, Restaurant]] = []
-    budget = parse_first_int(request)
+    intent = intent or infer_recommendation_intent(request, memory_context=memory_context)
+    budget = recommendation_budget(intent, request)
     tokens = recommendation_tokens(request)
+    intent_tokens = recommendation_tokens(" ".join(intent_search_terms(intent)))
     memory_tokens = recommendation_tokens(memory_context)[:25] if memory_context else []
     for restaurant in restaurants:
         score = score_restaurant_for_request(restaurant, tokens, budget)
+        if intent_tokens:
+            score += score_restaurant_for_request(restaurant, intent_tokens, budget)
+        exclude_tokens = recommendation_tokens(" ".join(list_from_intent(intent, "exclude_terms")))
+        if exclude_tokens and score_restaurant_for_request(restaurant, exclude_tokens, None) > 0:
+            continue
         if memory_tokens:
             memory_score = score_restaurant_for_request(restaurant, memory_tokens, None)
             if score > 0:
@@ -840,6 +861,21 @@ def recommendation_tokens(request: str) -> list[str]:
         "附近",
     }
     normalized_stops = {normalize_search_text(word) for word in stop_words}
+    normalized_stops.update(
+        normalize_search_text(word)
+        for word in [
+            "我",
+            "人在",
+            "想要",
+            "想吃",
+            "請問",
+            "這邊",
+            "有沒有",
+            "推薦",
+            "一下",
+            "會去",
+        ]
+    )
     normalized_text = normalize_search_text(text)
     tokens: list[str] = []
     for raw in text.split():
@@ -864,6 +900,199 @@ def recommendation_tokens(request: str) -> list[str]:
         if fallback:
             tokens.append(fallback)
     return tokens
+
+
+def infer_recommendation_intent(request: str, memory_context: str = "") -> dict[str, object]:
+    """Turn a natural sentence into DB search intent before candidate lookup."""
+
+    known = recommendation_known_values()
+    fallback = rule_based_recommendation_intent(request)
+    try:
+        response = openai_client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "你是餐廳推薦 bot 的查詢理解器。請先理解使用者真正想吃/想做什麼，"
+                        "再產生適合拿去 SQLite 餐廳 DB 搜尋的詞。"
+                        "DB 欄位包含店名、地區、分類、keywords、tags、comments、午餐/晚餐價格。"
+                        "請回 JSON object，格式："
+                        "{\"summary\":\"使用者意圖一句話\","
+                        "\"area_terms\":[\"地區詞\"],"
+                        "\"food_terms\":[\"料理/店型詞\"],"
+                        "\"scene_terms\":[\"場景/需求詞\"],"
+                        "\"exclude_terms\":[\"不要的詞\"],"
+                        "\"budget\":數字或null,"
+                        "\"expanded_terms\":[\"可搜尋同義詞\"]}。"
+                        "例：'人在橫濱 想要喝到吐' => area_terms 橫濱, food/scene 包含 居酒屋、酒、飲み、バル。"
+                        "例：'新宿 燒烤' => area_terms 新宿, food_terms 包含 燒肉、焼肉、焼鳥、串燒。"
+                        "只能產生搜尋詞，不要推薦不存在的店。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "request": request,
+                            "chat_memory": memory_context[:1200],
+                            "known_db_values": known,
+                            "fallback_hint": fallback,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            temperature=0.1,
+            max_tokens=500,
+            response_format={"type": "json_object"},
+            timeout=20,
+        )
+        data = json.loads(response.choices[0].message.content or "{}")
+        return merge_recommendation_intents(fallback, data)
+    except Exception as exc:
+        print(f"recommendation intent inference failed: {exc}")
+        return fallback
+
+
+def recommendation_known_values(limit: int = 120) -> dict[str, list[str]]:
+    """Expose known DB vocabulary to the AI intent parser."""
+
+    areas: list[str] = []
+    categories: list[str] = []
+    tags: list[str] = []
+    seen_area: set[str] = set()
+    seen_category: set[str] = set()
+    seen_tag: set[str] = set()
+    for restaurant in db.all():
+        if restaurant.area and restaurant.area not in seen_area:
+            seen_area.add(restaurant.area)
+            areas.append(restaurant.area)
+        if restaurant.category and restaurant.category not in seen_category:
+            seen_category.add(restaurant.category)
+            categories.append(restaurant.category)
+        for tag in [*restaurant.tags, *restaurant.keywords]:
+            if tag and tag not in seen_tag:
+                seen_tag.add(tag)
+                tags.append(tag)
+        if len(areas) + len(categories) + len(tags) >= limit:
+            break
+    return {
+        "areas": areas[:40],
+        "categories": categories[:30],
+        "tags": tags[:50],
+    }
+
+
+def rule_based_recommendation_intent(request: str) -> dict[str, object]:
+    """Local fallback intent expansion for common casual phrases."""
+
+    terms = recommendation_tokens(request)
+    normalized = normalize_search_text(request)
+    area_terms: list[str] = []
+    food_terms: list[str] = []
+    scene_terms: list[str] = []
+    expanded_terms: list[str] = []
+
+    known = recommendation_known_values()
+    for area in known["areas"]:
+        if normalize_search_text(area) in normalized:
+            area_terms.append(area)
+    area_aliases = [
+        ("橫濱", ["横浜", "橫濱"]),
+        ("横浜", ["横浜", "橫濱"]),
+        ("澀谷", ["渋谷", "澀谷"]),
+        ("渋谷", ["渋谷", "澀谷"]),
+    ]
+    for needle, values in area_aliases:
+        if normalize_search_text(needle) in normalized:
+            area_terms.extend(values)
+
+    if any(word in request for word in ["喝到吐", "喝酒", "小酌", "飲み", "酒"]):
+        food_terms.extend(["居酒屋", "バル", "焼鳥", "串燒", "串焼き"])
+        scene_terms.extend(["喝酒", "聚餐", "下班"])
+        expanded_terms.extend(["酒", "飲み", "居酒屋", "バル"])
+    if any(word in request for word in ["燒烤", "烧烤", "烤肉", "串燒", "串烧"]):
+        food_terms.extend(["燒肉", "焼肉", "焼鳥", "串燒", "串焼き", "ホルモン"])
+        expanded_terms.extend(["燒肉", "焼肉", "焼鳥", "串"])
+    if any(word in request for word in ["下班", "仕事帰り", "晚餐", "晚上"]):
+        scene_terms.extend(["晚餐", "下班", "喝酒"])
+    if any(word in request for word in ["便宜", "省錢", "安い", "便宜一點"]):
+        scene_terms.extend(["便宜", "平價"])
+    if any(word in request for word in ["一個人", "自己", "ひとり", "單人"]):
+        scene_terms.extend(["一個人", "吧台", "快速"])
+
+    return {
+        "summary": request,
+        "area_terms": unique_texts(area_terms),
+        "food_terms": unique_texts(food_terms),
+        "scene_terms": unique_texts(scene_terms),
+        "exclude_terms": [],
+        "budget": parse_first_int(request),
+        "expanded_terms": unique_texts([*terms, *expanded_terms]),
+    }
+
+
+def merge_recommendation_intents(
+    fallback: dict[str, object],
+    inferred: dict[str, object],
+) -> dict[str, object]:
+    """Merge AI intent with deterministic fallback terms."""
+
+    merged = dict(fallback)
+    for key in ["area_terms", "food_terms", "scene_terms", "exclude_terms", "expanded_terms"]:
+        merged[key] = unique_texts([
+            *list_from_intent(fallback, key),
+            *list_from_intent(inferred, key),
+        ])
+    summary = str(inferred.get("summary") or fallback.get("summary") or "").strip()
+    if summary:
+        merged["summary"] = summary
+    budget = inferred.get("budget", fallback.get("budget"))
+    merged["budget"] = budget if isinstance(budget, int) else fallback.get("budget")
+    return merged
+
+
+def intent_search_terms(intent: dict[str, object]) -> list[str]:
+    """Flatten structured recommendation intent into searchable text terms."""
+
+    terms: list[str] = []
+    for key in ["area_terms", "food_terms", "scene_terms", "expanded_terms"]:
+        terms.extend(list_from_intent(intent, key))
+    return unique_texts(terms)
+
+
+def list_from_intent(intent: dict[str, object], key: str) -> list[str]:
+    """Read a list-like value from an intent dict safely."""
+
+    value = intent.get(key)
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def recommendation_budget(intent: dict[str, object], request: str) -> int | None:
+    """Pick parsed AI budget first, then fallback to first number in text."""
+
+    budget = intent.get("budget")
+    if isinstance(budget, int):
+        return budget
+    return parse_first_int(request)
+
+
+def unique_texts(values: Iterable[str]) -> list[str]:
+    """Deduplicate text while keeping order."""
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value).strip()
+        key = normalize_search_text(text)
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
 
 
 def known_recommendation_terms() -> list[str]:
@@ -988,6 +1217,7 @@ def rank_recommendations_with_ai(
     request: str,
     candidates: list[Restaurant],
     memory_context: str = "",
+    intent: dict[str, object] | None = None,
 ) -> list[tuple[Restaurant, str]]:
     """Ask AI to rank only the provided candidates, with a local fallback."""
 
@@ -1023,6 +1253,7 @@ def rank_recommendations_with_ai(
                     "content": json.dumps(
                         {
                             "request": request,
+                            "interpreted_intent": intent or {},
                             "chat_memory": memory_context[:2000],
                             "candidates": payload,
                         },
