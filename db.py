@@ -66,6 +66,19 @@ class RestaurantComment:
     source_message_id: int | None = None
 
 
+@dataclass(frozen=True)
+class ChatMemoryMessage:
+    """One non-bot Discord message saved as short-term recommendation memory."""
+
+    message_id: int
+    guild_id: int
+    channel_id: int
+    author_id: int
+    author_name: str
+    content: str
+    created_at: str
+
+
 class RestaurantDB:
     """包裝 SQLite 操作的類別。"""
 
@@ -171,6 +184,36 @@ class RestaurantDB:
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_restaurant_tags_tag ON restaurant_tags(tag)"
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_memory_messages (
+                    message_id INTEGER PRIMARY KEY,
+                    guild_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    author_id INTEGER NOT NULL,
+                    author_name TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_chat_memory_channel_created
+                ON chat_memory_messages(guild_id, channel_id, created_at)
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chat_memory_summaries (
+                    guild_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    summary TEXT NOT NULL,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (guild_id, channel_id)
+                )
+                """
             )
             self._migrate_comments_and_tags(conn)
 
@@ -821,6 +864,176 @@ class RestaurantDB:
                 changed += 1
         return changed
 
+    def record_chat_memory(
+        self,
+        *,
+        guild_id: int,
+        channel_id: int,
+        author_id: int,
+        author_name: str,
+        message_id: int,
+        content: str,
+        created_at: str,
+    ) -> bool:
+        """Save one user message for recommendation memory."""
+
+        text = content.strip()
+        if not text:
+            return False
+        with self.session() as conn:
+            cur = conn.execute(
+                """
+                INSERT OR IGNORE INTO chat_memory_messages (
+                    message_id, guild_id, channel_id, author_id, author_name, content, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message_id,
+                    guild_id,
+                    channel_id,
+                    author_id,
+                    author_name.strip() or str(author_id),
+                    text,
+                    created_at,
+                ),
+            )
+            return cur.rowcount > 0
+
+    def chat_memory_count(self, *, guild_id: int, channel_id: int) -> int:
+        """Return short-term memory row count for one Discord channel."""
+
+        with self.session() as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM chat_memory_messages
+                WHERE guild_id = ? AND channel_id = ?
+                """,
+                (guild_id, channel_id),
+            ).fetchone()
+        return int(row["total"] if row else 0)
+
+    def old_chat_memory_messages(
+        self,
+        *,
+        guild_id: int,
+        channel_id: int,
+        keep_latest: int,
+        limit: int,
+    ) -> list[ChatMemoryMessage]:
+        """Return older messages that can be summarized and deleted."""
+
+        with self.session() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM chat_memory_messages
+                WHERE guild_id = ?
+                  AND channel_id = ?
+                  AND message_id NOT IN (
+                    SELECT message_id
+                    FROM chat_memory_messages
+                    WHERE guild_id = ? AND channel_id = ?
+                    ORDER BY created_at DESC, message_id DESC
+                    LIMIT ?
+                  )
+                ORDER BY created_at ASC, message_id ASC
+                LIMIT ?
+                """,
+                (guild_id, channel_id, guild_id, channel_id, keep_latest, limit),
+            ).fetchall()
+        return [self._row_to_chat_memory_message(row) for row in rows]
+
+    def delete_chat_memory_messages(self, message_ids: Iterable[int]) -> int:
+        """Delete raw chat memory rows after they have been summarized."""
+
+        ids = [int(message_id) for message_id in message_ids]
+        if not ids:
+            return 0
+        with self.session() as conn:
+            cur = conn.executemany(
+                "DELETE FROM chat_memory_messages WHERE message_id = ?",
+                [(message_id,) for message_id in ids],
+            )
+            return cur.rowcount if cur.rowcount is not None else 0
+
+    def chat_memory_summary(self, *, guild_id: int, channel_id: int) -> str:
+        """Return the long-term summary for one Discord channel."""
+
+        with self.session() as conn:
+            row = conn.execute(
+                """
+                SELECT summary
+                FROM chat_memory_summaries
+                WHERE guild_id = ? AND channel_id = ?
+                """,
+                (guild_id, channel_id),
+            ).fetchone()
+        return str(row["summary"] or "") if row else ""
+
+    def upsert_chat_memory_summary(
+        self,
+        *,
+        guild_id: int,
+        channel_id: int,
+        summary: str,
+    ) -> None:
+        """Save or replace the long-term chat memory summary."""
+
+        with self.session() as conn:
+            conn.execute(
+                """
+                INSERT INTO chat_memory_summaries (guild_id, channel_id, summary, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(guild_id, channel_id) DO UPDATE SET
+                    summary = excluded.summary,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (guild_id, channel_id, summary.strip()),
+            )
+
+    def chat_memory_context(
+        self,
+        *,
+        guild_id: int,
+        channel_id: int,
+        recent_limit: int = 30,
+    ) -> str:
+        """Build compact memory text for recommendation prompts."""
+
+        with self.session() as conn:
+            summary_row = conn.execute(
+                """
+                SELECT summary
+                FROM chat_memory_summaries
+                WHERE guild_id = ? AND channel_id = ?
+                """,
+                (guild_id, channel_id),
+            ).fetchone()
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM chat_memory_messages
+                WHERE guild_id = ? AND channel_id = ?
+                ORDER BY created_at DESC, message_id DESC
+                LIMIT ?
+                """,
+                (guild_id, channel_id, recent_limit),
+            ).fetchall()
+
+        parts: list[str] = []
+        if summary_row and str(summary_row["summary"] or "").strip():
+            parts.append(f"長期聊天偏好摘要：{str(summary_row['summary']).strip()}")
+        recent = [
+            f"{row['author_name']}: {str(row['content']).strip()}"
+            for row in reversed(rows)
+            if str(row["content"] or "").strip()
+        ]
+        if recent:
+            parts.append("最近聊天：\n" + "\n".join(recent))
+        return "\n\n".join(parts).strip()
+
     def all(self) -> list[Restaurant]:
         """取得全部餐廳，最新建立的排前面。"""
 
@@ -870,6 +1083,20 @@ class RestaurantDB:
             created_by=row["created_by"],
             created_at=row["created_at"],
             source_message_id=row["source_message_id"],
+        )
+
+    @staticmethod
+    def _row_to_chat_memory_message(row: sqlite3.Row) -> ChatMemoryMessage:
+        """Convert a SQLite chat memory row into a dataclass."""
+
+        return ChatMemoryMessage(
+            message_id=int(row["message_id"]),
+            guild_id=int(row["guild_id"]),
+            channel_id=int(row["channel_id"]),
+            author_id=int(row["author_id"]),
+            author_name=str(row["author_name"]),
+            content=str(row["content"]),
+            created_at=str(row["created_at"]),
         )
 
     @staticmethod

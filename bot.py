@@ -15,6 +15,7 @@ extractor.py、sheets_sync.py 這些模組完成真正工作。
 """
 
 import csv
+import asyncio
 import datetime as dt
 import io
 import json
@@ -30,7 +31,7 @@ from dotenv import load_dotenv
 from googleapiclient.errors import HttpError
 from openai import OpenAI
 
-from db import Restaurant, RestaurantDB, normalize_search_text
+from db import ChatMemoryMessage, Restaurant, RestaurantDB, normalize_search_text
 from extractor import MessageSnippet, extract_restaurant, fetch_tabelog_price_info
 from sheets_sync import sync_restaurants_to_sheet
 
@@ -56,6 +57,15 @@ if GOOGLE_SERVICE_ACCOUNT_FILE and not GOOGLE_SERVICE_ACCOUNT_FILE.is_absolute()
 GOOGLE_SHEETS_WORKSHEET = os.getenv("GOOGLE_SHEETS_WORKSHEET", "restaurants").strip() or "restaurants"
 GOOGLE_MY_MAPS_URL = os.getenv("GOOGLE_MY_MAPS_URL", "").strip()
 PUBLIC_WEB_URL = os.getenv("PUBLIC_WEB_URL", "").strip()
+CHAT_MEMORY_ENABLED = os.getenv("CHAT_MEMORY_ENABLED", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
+CHAT_MEMORY_RAW_LIMIT = int(os.getenv("CHAT_MEMORY_RAW_LIMIT", "100"))
+CHAT_MEMORY_SUMMARY_BATCH = int(os.getenv("CHAT_MEMORY_SUMMARY_BATCH", "50"))
+CHAT_MEMORY_MAX_MESSAGE_CHARS = int(os.getenv("CHAT_MEMORY_MAX_MESSAGE_CHARS", "800"))
 
 # 建立共用物件：
 # - db 負責所有 SQLite 操作
@@ -298,6 +308,7 @@ async def on_message(message: discord.Message) -> None:
     if message.author.bot or not client.user:
         return
     if client.user not in message.mentions:
+        await remember_chat_message(message)
         return
 
     keyword = re.sub(rf"<@!?{client.user.id}>", "", message.content).strip()
@@ -318,6 +329,99 @@ async def on_message(message: discord.Message) -> None:
         await send_recommendations(message, recommendation_request)
         return
     await send_search_results(message, keyword)
+
+
+async def remember_chat_message(message: discord.Message) -> None:
+    """Store non-bot channel messages as lightweight recommendation memory."""
+
+    if not CHAT_MEMORY_ENABLED or not message.guild:
+        return
+    content = message.clean_content.strip() if hasattr(message, "clean_content") else message.content.strip()
+    if not content:
+        return
+    content = re.sub(r"\s+", " ", content)
+    if len(content) > CHAT_MEMORY_MAX_MESSAGE_CHARS:
+        content = content[:CHAT_MEMORY_MAX_MESSAGE_CHARS].rstrip() + "..."
+
+    inserted = db.record_chat_memory(
+        guild_id=message.guild.id,
+        channel_id=message.channel.id,
+        author_id=message.author.id,
+        author_name=message.author.display_name,
+        message_id=message.id,
+        content=content,
+        created_at=message.created_at.isoformat(),
+    )
+    if not inserted:
+        return
+
+    count = db.chat_memory_count(guild_id=message.guild.id, channel_id=message.channel.id)
+    if count > CHAT_MEMORY_RAW_LIMIT + CHAT_MEMORY_SUMMARY_BATCH:
+        asyncio.create_task(compact_chat_memory(message.guild.id, message.channel.id))
+
+
+async def compact_chat_memory(guild_id: int, channel_id: int) -> None:
+    """Summarize old raw chat memory so the DB keeps recent detail and compact history."""
+
+    old_messages = db.old_chat_memory_messages(
+        guild_id=guild_id,
+        channel_id=channel_id,
+        keep_latest=CHAT_MEMORY_RAW_LIMIT,
+        limit=CHAT_MEMORY_SUMMARY_BATCH,
+    )
+    if not old_messages:
+        return
+    existing_summary = db.chat_memory_summary(guild_id=guild_id, channel_id=channel_id)
+    try:
+        summary = await asyncio.to_thread(
+            summarize_chat_memory,
+            existing_summary,
+            old_messages,
+        )
+    except Exception as exc:
+        print(f"chat memory summarization failed: {exc}")
+        return
+    if not summary:
+        return
+    db.upsert_chat_memory_summary(guild_id=guild_id, channel_id=channel_id, summary=summary)
+    db.delete_chat_memory_messages(message.message_id for message in old_messages)
+
+
+def summarize_chat_memory(existing_summary: str, messages: list[ChatMemoryMessage]) -> str:
+    """Use AI to merge older chat messages into a compact food-preference summary."""
+
+    transcript = "\n".join(
+        f"{message.author_name}: {message.content}"
+        for message in messages
+        if message.content.strip()
+    )
+    response = openai_client.chat.completions.create(
+        model=OPENAI_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "你在整理 Discord 美食聊天記憶。請只保留和餐廳推薦有關的偏好："
+                    "地區、料理類型、預算、口味、喜歡/不喜歡、用餐場景、常提到的店。"
+                    "不要保存無關閒聊、敏感個資、完整對話。請用繁體中文，200 字以內。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "existing_summary": existing_summary,
+                        "new_messages": transcript,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+        temperature=0.1,
+        max_tokens=300,
+        timeout=20,
+    )
+    return (response.choices[0].message.content or "").strip()
 
 
 @client.tree.context_menu(name="保存餐廳資訊")
@@ -547,7 +651,13 @@ async def send_recommendation_interaction(interaction: discord.Interaction, requ
     """Handle all slash-command recommendation aliases."""
 
     await interaction.response.defer(thinking=True, ephemeral=False)
-    content = build_recommendation_response(request)
+    memory_context = ""
+    if interaction.guild_id and interaction.channel_id:
+        memory_context = db.chat_memory_context(
+            guild_id=interaction.guild_id,
+            channel_id=interaction.channel_id,
+        )
+    content = build_recommendation_response(request, memory_context=memory_context)
     await interaction.followup.send(content, ephemeral=False)
 
 
@@ -636,21 +746,27 @@ async def send_recommendations(target: discord.Message, request: str) -> None:
         )
         return
     status = await target.reply("正在從已儲存的餐廳裡挑候選...", mention_author=False)
-    response = build_recommendation_response(request)
+    memory_context = ""
+    if target.guild:
+        memory_context = db.chat_memory_context(
+            guild_id=target.guild.id,
+            channel_id=target.channel.id,
+        )
+    response = build_recommendation_response(request, memory_context=memory_context)
     await status.edit(content=response)
 
 
-def build_recommendation_response(request: str) -> str:
+def build_recommendation_response(request: str, memory_context: str = "") -> str:
     """Build a recommendation message without inventing restaurants."""
 
-    candidates = recommendation_candidates(request, limit=10)
+    candidates = recommendation_candidates(request, memory_context=memory_context, limit=10)
     if not candidates:
         return (
             f"目前沒有找到符合「{request}」的已儲存餐廳。\n"
             "可以先試試比較短的關鍵字，例如：`@食べログBOT 拉麵` 或 `@食べログBOT 找 新宿 拉麵`。"
         )
 
-    ranked = rank_recommendations_with_ai(request, candidates)
+    ranked = rank_recommendations_with_ai(request, candidates, memory_context=memory_context)
     lines = [f"從 DB 裡幫你挑了 {len(ranked)} 間「{request}」候選："]
     for index, (restaurant, reason) in enumerate(ranked, start=1):
         price = recommendation_price_text(restaurant)
@@ -671,15 +787,26 @@ def build_recommendation_response(request: str) -> str:
     return trim_discord_message("\n\n".join(lines))
 
 
-def recommendation_candidates(request: str, limit: int = 10) -> list[Restaurant]:
+def recommendation_candidates(
+    request: str,
+    memory_context: str = "",
+    limit: int = 10,
+) -> list[Restaurant]:
     """Score saved restaurants against a natural language request."""
 
     restaurants = db.all()
     scored: list[tuple[int, int, Restaurant]] = []
     budget = parse_first_int(request)
     tokens = recommendation_tokens(request)
+    memory_tokens = recommendation_tokens(memory_context)[:25] if memory_context else []
     for restaurant in restaurants:
         score = score_restaurant_for_request(restaurant, tokens, budget)
+        if memory_tokens:
+            memory_score = score_restaurant_for_request(restaurant, memory_tokens, None)
+            if score > 0:
+                score += min(3, memory_score)
+            elif len(tokens) <= 1 and memory_score > 0:
+                score = min(3, memory_score)
         if score > 0:
             scored.append((score, -restaurant.id, restaurant))
     scored.sort(reverse=True)
@@ -860,6 +987,7 @@ def restaurant_matches_budget(restaurant: Restaurant, budget: int) -> bool:
 def rank_recommendations_with_ai(
     request: str,
     candidates: list[Restaurant],
+    memory_context: str = "",
 ) -> list[tuple[Restaurant, str]]:
     """Ask AI to rank only the provided candidates, with a local fallback."""
 
@@ -893,7 +1021,11 @@ def rank_recommendations_with_ai(
                 {
                     "role": "user",
                     "content": json.dumps(
-                        {"request": request, "candidates": payload},
+                        {
+                            "request": request,
+                            "chat_memory": memory_context[:2000],
+                            "candidates": payload,
+                        },
                         ensure_ascii=False,
                     ),
                 },
