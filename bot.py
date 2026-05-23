@@ -1794,8 +1794,9 @@ def restaurant_embed(restaurant: Restaurant) -> discord.Embed:
         embed.add_field(name="食べログ", value=restaurant.tabelog_url, inline=False)
     if restaurant.google_maps_url:
         embed.add_field(name="Google Maps", value=restaurant.google_maps_url, inline=False)
-    if restaurant.image_url:
-        embed.set_thumbnail(url=restaurant.image_url)
+    thumbnail_url = discord_embed_image_url(restaurant.image_url)
+    if thumbnail_url:
+        embed.set_thumbnail(url=thumbnail_url)
     price_lines = []
     if restaurant.lunch_budget_text:
         price_lines.append(f"午餐：{restaurant.lunch_budget_text}")
@@ -1808,6 +1809,19 @@ def restaurant_embed(restaurant: Restaurant) -> discord.Embed:
     if restaurant.tags:
         embed.add_field(name="Tags", value=", ".join(restaurant.tags), inline=False)
     return embed
+
+
+def discord_embed_image_url(image_url: str | None) -> str | None:
+    """Return a fully qualified image URL acceptable for Discord embeds."""
+
+    if not image_url:
+        return None
+    url = image_url.strip()
+    if url.startswith(("http://", "https://")):
+        return url
+    if not url.startswith("/") or not PUBLIC_WEB_URL:
+        return None
+    return f"{PUBLIC_WEB_URL.rstrip('/')}{url}"
 
 
 def unique_areas(restaurants: list[Restaurant]) -> list[str]:
