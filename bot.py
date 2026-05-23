@@ -773,21 +773,23 @@ def build_recommendation_response(request: str, memory_context: str = "") -> str
     """Build a recommendation message without inventing restaurants."""
 
     intent = infer_recommendation_intent(request, memory_context=memory_context)
+    areas = list_from_intent(intent, "area_terms")
+    area_pool = filter_restaurants_by_area(db.all(), areas)
     candidates = recommendation_candidates(
         request,
         memory_context=memory_context,
         intent=intent,
         limit=10,
     )
+    used_area_fallback = False
+    if not candidates and areas and area_pool:
+        candidates = area_fallback_candidates(area_pool, intent, limit=10)
+        used_area_fallback = bool(candidates)
     if not candidates:
         understood = intent.get("summary") or "、".join(intent_search_terms(intent)) or request
-        areas = list_from_intent(intent, "area_terms")
         if areas:
             area_text = "、".join(areas)
-            return (
-                f"目前 DB 裡沒有找到「{area_text}」附近符合「{understood}」的餐廳。\n"
-                "如果你確定有存過，可以先用公開網頁或 `/find_restaurant` 確認地區欄位是不是同一個名稱。"
-            )
+            return f"共享地圖裡「{area_text}」此地區沒有儲存餐廳。"
         return (
             f"目前沒有找到符合「{understood}」的已儲存餐廳。\n"
             "可以先試試比較短的關鍵字，例如：`@食べログBOT 拉麵` 或 `@食べログBOT 找 新宿 拉麵`。"
@@ -800,7 +802,14 @@ def build_recommendation_response(request: str, memory_context: str = "") -> str
         intent=intent,
     )
     understood = intent.get("summary") or request
-    lines = [f"我理解成「{understood}」，從 DB 裡幫你挑了 {len(ranked)} 間候選："]
+    if used_area_fallback:
+        area_text = "、".join(areas)
+        lines = [
+            f"我理解成「{understood}」，但「{area_text}」目前沒有找到指定料理類型，"
+            f"先改推薦該地區其他已儲存餐廳 {len(ranked)} 間："
+        ]
+    else:
+        lines = [f"我理解成「{understood}」，從 DB 裡幫你挑了 {len(ranked)} 間候選："]
     for index, (restaurant, reason) in enumerate(ranked, start=1):
         price = recommendation_price_text(restaurant)
         lines.append(
@@ -837,10 +846,19 @@ def recommendation_candidates(
     memory_tokens = recommendation_tokens(memory_context)[:25] if memory_context else []
     area_terms = list_from_intent(intent, "area_terms")
     search_pool = filter_restaurants_by_area(restaurants, area_terms)
+    include_area_score = not area_terms
+    if area_terms:
+        tokens = remove_area_tokens(tokens, area_terms)
+        intent_tokens = remove_area_tokens(intent_tokens, area_terms)
     for restaurant in search_pool:
-        score = score_restaurant_for_request(restaurant, tokens, budget)
+        score = score_restaurant_for_request(restaurant, tokens, budget, include_area=include_area_score)
         if intent_tokens:
-            score += score_restaurant_for_request(restaurant, intent_tokens, budget)
+            score += score_restaurant_for_request(
+                restaurant,
+                intent_tokens,
+                budget,
+                include_area=include_area_score,
+            )
         exclude_tokens = recommendation_tokens(" ".join(list_from_intent(intent, "exclude_terms")))
         if exclude_tokens and score_restaurant_for_request(restaurant, exclude_tokens, None) > 0:
             continue
@@ -854,6 +872,42 @@ def recommendation_candidates(
             scored.append((score, -restaurant.id, restaurant))
     scored.sort(reverse=True)
     return [restaurant for _, _, restaurant in scored[:limit]]
+
+
+def area_fallback_candidates(
+    restaurants: list[Restaurant],
+    intent: dict[str, object],
+    limit: int = 10,
+) -> list[Restaurant]:
+    """When a requested area exists but the requested food does not, suggest other local saved spots."""
+
+    budget = recommendation_budget(intent, "")
+    exclude_tokens = recommendation_tokens(" ".join(list_from_intent(intent, "exclude_terms")))
+    scored: list[tuple[int, int, Restaurant]] = []
+    for restaurant in restaurants:
+        if exclude_tokens and score_restaurant_for_request(restaurant, exclude_tokens, None) > 0:
+            continue
+        score = 1
+        if budget and restaurant_matches_budget(restaurant, budget):
+            score += 2
+        scored.append((score, -restaurant.id, restaurant))
+    scored.sort(reverse=True)
+    return [restaurant for _, _, restaurant in scored[:limit]]
+
+
+def remove_area_tokens(tokens: list[str], area_terms: list[str]) -> list[str]:
+    """Remove area words so an area match alone does not count as a food/type match."""
+
+    normalized_areas = normalized_area_terms(area_terms)
+    if not normalized_areas:
+        return tokens
+    result: list[str] = []
+    for token in tokens:
+        normalized = normalize_search_text(token)
+        if any(area in normalized or normalized in area for area in normalized_areas):
+            continue
+        result.append(token)
+    return result
 
 
 def filter_restaurants_by_area(restaurants: list[Restaurant], area_terms: list[str]) -> list[Restaurant]:
@@ -1237,6 +1291,7 @@ def score_restaurant_for_request(
     restaurant: Restaurant,
     tokens: list[str],
     budget: int | None,
+    include_area: bool = True,
 ) -> int:
     """Give higher points to area/category/keyword matches than comment matches."""
 
@@ -1250,7 +1305,7 @@ def score_restaurant_for_request(
     }
     score = 0
     for token in tokens:
-        if token in fields["area"]:
+        if include_area and token in fields["area"]:
             score += 5
         if token in fields["category"]:
             score += 4
