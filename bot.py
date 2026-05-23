@@ -31,7 +31,7 @@ from dotenv import load_dotenv
 from googleapiclient.errors import HttpError
 from openai import OpenAI
 
-from db import ChatMemoryMessage, Restaurant, RestaurantDB, normalize_search_text
+from db import ChatMemoryMessage, Restaurant, RestaurantDB, normalize_area, normalize_search_text
 from extractor import MessageSnippet, extract_restaurant, fetch_tabelog_price_info
 from sheets_sync import sync_restaurants_to_sheet
 
@@ -781,6 +781,13 @@ def build_recommendation_response(request: str, memory_context: str = "") -> str
     )
     if not candidates:
         understood = intent.get("summary") or "、".join(intent_search_terms(intent)) or request
+        areas = list_from_intent(intent, "area_terms")
+        if areas:
+            area_text = "、".join(areas)
+            return (
+                f"目前 DB 裡沒有找到「{area_text}」附近符合「{understood}」的餐廳。\n"
+                "如果你確定有存過，可以先用公開網頁或 `/find_restaurant` 確認地區欄位是不是同一個名稱。"
+            )
         return (
             f"目前沒有找到符合「{understood}」的已儲存餐廳。\n"
             "可以先試試比較短的關鍵字，例如：`@食べログBOT 拉麵` 或 `@食べログBOT 找 新宿 拉麵`。"
@@ -828,7 +835,9 @@ def recommendation_candidates(
     tokens = recommendation_tokens(request)
     intent_tokens = recommendation_tokens(" ".join(intent_search_terms(intent)))
     memory_tokens = recommendation_tokens(memory_context)[:25] if memory_context else []
-    for restaurant in restaurants:
+    area_terms = list_from_intent(intent, "area_terms")
+    search_pool = filter_restaurants_by_area(restaurants, area_terms)
+    for restaurant in search_pool:
         score = score_restaurant_for_request(restaurant, tokens, budget)
         if intent_tokens:
             score += score_restaurant_for_request(restaurant, intent_tokens, budget)
@@ -845,6 +854,50 @@ def recommendation_candidates(
             scored.append((score, -restaurant.id, restaurant))
     scored.sort(reverse=True)
     return [restaurant for _, _, restaurant in scored[:limit]]
+
+
+def filter_restaurants_by_area(restaurants: list[Restaurant], area_terms: list[str]) -> list[Restaurant]:
+    """If the user clearly named an area, keep recommendations inside that area."""
+
+    normalized_terms = normalized_area_terms(area_terms)
+    if not normalized_terms:
+        return restaurants
+    return [
+        restaurant
+        for restaurant in restaurants
+        if restaurant_matches_area_terms(restaurant, normalized_terms)
+    ]
+
+
+def normalized_area_terms(area_terms: list[str]) -> set[str]:
+    """Normalize AI/fallback area words into comparable station/neighborhood names."""
+
+    normalized: set[str] = set()
+    for area in area_terms:
+        for value in [area, normalize_area(area) or ""]:
+            text = normalize_search_text(value)
+            if text:
+                normalized.add(text)
+    return normalized
+
+
+def restaurant_matches_area_terms(restaurant: Restaurant, normalized_terms: set[str]) -> bool:
+    """Match an area request against the saved restaurant area and area-like keywords."""
+
+    area_values = [
+        restaurant.area or "",
+        normalize_area(restaurant.area) or "",
+    ]
+    for keyword in [*restaurant.keywords, *restaurant.tags]:
+        if normalize_area(keyword):
+            area_values.append(keyword)
+            area_values.append(normalize_area(keyword) or "")
+    normalized_values = {normalize_search_text(value) for value in area_values if value}
+    return any(
+        term in value or value in term
+        for term in normalized_terms
+        for value in normalized_values
+    )
 
 
 def recommendation_tokens(request: str) -> list[str]:
@@ -1011,6 +1064,9 @@ def rule_based_recommendation_intent(request: str) -> dict[str, object]:
     for area in known["areas"]:
         if normalize_search_text(area) in normalized:
             area_terms.append(area)
+    request_area = normalize_area(request)
+    if request_area:
+        area_terms.append(request_area)
     area_aliases = [
         ("橫濱", ["横浜", "橫濱"]),
         ("横浜", ["横浜", "橫濱"]),
