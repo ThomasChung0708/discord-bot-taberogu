@@ -316,6 +316,13 @@ async def on_message(message: discord.Message) -> None:
         await message.reply("請在提到我後面加上關鍵字，例如：@食べログBOT 拉麵", mention_author=False)
         return
 
+    if is_map_request(keyword):
+        await send_map_url(message)
+        return
+    if is_web_request(keyword):
+        await send_public_web_url(message)
+        return
+
     recommendation_request = parse_recommendation_request(keyword)
     if recommendation_request is not None:
         await send_recommendations(message, recommendation_request)
@@ -323,6 +330,12 @@ async def on_message(message: discord.Message) -> None:
     keyword = cleanup_search_keyword(keyword)
     if not keyword:
         await message.reply("請在提到我後面加上關鍵字，例如：@食べログBOT 拉麵", mention_author=False)
+        return
+    if is_map_request(keyword):
+        await send_map_url(message)
+        return
+    if is_web_request(keyword):
+        await send_public_web_url(message)
         return
     recommendation_request = parse_recommendation_request(keyword)
     if recommendation_request is not None:
@@ -1685,6 +1698,22 @@ async def send_map_url(message: discord.Message) -> None:
     )
 
 
+@client.tree.command(name="map", description="顯示 Google My Maps 地圖網址")
+async def map_command(interaction: discord.Interaction) -> None:
+    """slash command：顯示 My Maps 分享網址。"""
+
+    if not GOOGLE_MY_MAPS_URL:
+        await interaction.response.send_message(
+            "還沒有設定 My Maps 網址。請先在 .env 加上 GOOGLE_MY_MAPS_URL。",
+            ephemeral=True,
+        )
+        return
+    await interaction.response.send_message(
+        f"餐廳地圖在這裡：\n{GOOGLE_MY_MAPS_URL}",
+        ephemeral=False,
+    )
+
+
 @client.tree.command(name="web", description="顯示餐廳公開網頁網址")
 async def web(interaction: discord.Interaction) -> None:
     """slash command：顯示公開餐廳網頁。"""
@@ -1878,6 +1907,22 @@ def parse_first_int(value: str) -> int | None:
 
     match = re.search(r"\d+", value)
     return int(match.group(0)) if match else None
+
+
+def is_map_request(keyword: str) -> bool:
+    """判斷 @bot 訊息是不是只想取得地圖網址。"""
+
+    normalized = keyword.strip().lower().replace("　", " ")
+    normalized = re.sub(r"[：:，,。.!！?？]+", " ", normalized).strip()
+    return normalized in {"地圖", "地图", "地図", "map", "maps", "google map", "google maps"}
+
+
+def is_web_request(keyword: str) -> bool:
+    """判斷 @bot 訊息是不是只想取得公開網頁網址。"""
+
+    normalized = keyword.strip().lower().replace("　", " ")
+    normalized = re.sub(r"[：:，,。.!！?？]+", " ", normalized).strip()
+    return normalized in {"網頁", "网页", "web", "網站", "网站", "site"}
 
 
 def cleanup_search_keyword(keyword: str) -> str:
