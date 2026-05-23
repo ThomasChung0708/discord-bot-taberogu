@@ -1685,6 +1685,7 @@ async def send_map_url(message: discord.Message) -> None:
     )
 
 
+@client.tree.command(name="web", description="顯示餐廳公開網頁網址")
 async def web(interaction: discord.Interaction) -> None:
     """slash command：顯示公開餐廳網頁。"""
 
