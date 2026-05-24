@@ -496,39 +496,85 @@ PUBLIC_HTML = r"""
   <title>共享美食清單</title>
   <style>
     :root {
-      --bg: #f6f7f9;
-      --panel: #ffffff;
-      --text: #1f2933;
-      --muted: #657484;
-      --line: #d9e0e7;
-      --accent: #0f766e;
-      --accent-soft: #dff3ef;
+      color-scheme: light;
+      --bg: #f8f3ee;
+      --bg-band: #fff8f1;
+      --panel: #fffdf9;
+      --panel-strong: #ffffff;
+      --text: #2d251f;
+      --muted: #7b6d62;
+      --line: #ead8c8;
+      --line-strong: #d9b89d;
+      --accent: #b45635;
+      --accent-strong: #893d27;
+      --accent-soft: #f6dfd1;
+      --sage: #4f7864;
+      --sage-soft: #e6f0e8;
+      --shadow: 0 14px 34px rgba(97, 63, 40, 0.10);
     }
 
     * { box-sizing: border-box; }
     body {
       margin: 0;
-      background: var(--bg);
+      background:
+        linear-gradient(180deg, var(--bg-band) 0, var(--bg) 280px, #f7f1eb 100%);
       color: var(--text);
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-family: "Yu Gothic UI", "Hiragino Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       line-height: 1.5;
     }
 
     header {
-      background: var(--panel);
-      border-bottom: 1px solid var(--line);
-      padding: 16px 22px;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 12px;
+      background: rgba(255, 253, 249, 0.94);
+      border-bottom: 1px solid rgba(234, 216, 200, 0.85);
+      padding: 14px 24px;
       position: sticky;
       top: 0;
       z-index: 5;
+      backdrop-filter: blur(16px);
     }
 
-    h1 { font-size: 20px; margin: 0; }
-    a { color: var(--accent); text-decoration: none; }
+    .header-inner {
+      max-width: 1160px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff7ed;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      box-shadow: 0 8px 18px rgba(180, 86, 53, 0.22);
+    }
+
+    h1 {
+      font-size: 20px;
+      margin: 0;
+      letter-spacing: 0;
+      line-height: 1.2;
+    }
+
+    .subtitle {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    a { color: var(--accent-strong); text-decoration: none; }
     .header-actions {
       display: flex;
       align-items: center;
@@ -539,15 +585,15 @@ PUBLIC_HTML = r"""
     .lang-switch {
       display: inline-flex;
       border: 1px solid var(--line);
-      border-radius: 6px;
+      border-radius: 8px;
       overflow: hidden;
-      background: #fff;
+      background: var(--panel-strong);
     }
 
     .lang-switch button {
       border: 0;
       border-right: 1px solid var(--line);
-      background: #fff;
+      background: transparent;
       color: var(--muted);
       padding: 7px 9px;
       font: inherit;
@@ -557,68 +603,134 @@ PUBLIC_HTML = r"""
     .lang-switch button:last-child { border-right: 0; }
     .lang-switch button.active {
       background: var(--accent);
-      color: #fff;
+      color: #fff8f1;
+    }
+
+    .nav-link {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 7px 10px;
+      background: var(--panel-strong);
+      color: var(--text);
+      font-size: 14px;
     }
 
     main {
-      max-width: 1040px;
+      max-width: 1160px;
       margin: 0 auto;
-      padding: 18px;
+      padding: 24px 18px 36px;
+    }
+
+    .intro {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: end;
+      gap: 18px;
+      margin-bottom: 16px;
+      padding: 8px 2px 4px;
+    }
+
+    .intro-title {
+      margin: 0;
+      font-size: 30px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    .intro-copy {
+      margin: 8px 0 0;
+      color: var(--muted);
+      max-width: 620px;
+    }
+
+    .count-pill {
+      border: 1px solid var(--line-strong);
+      background: var(--panel);
+      color: var(--accent-strong);
+      border-radius: 999px;
+      padding: 8px 12px;
+      font-size: 14px;
+      white-space: nowrap;
     }
 
     .toolbar {
       display: grid;
       grid-template-columns: 1fr 160px 160px;
-      gap: 8px;
-      margin-bottom: 14px;
+      gap: 10px;
+      margin-bottom: 16px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 253, 249, 0.88);
+      box-shadow: var(--shadow);
     }
 
     input, select {
       width: 100%;
       border: 1px solid var(--line);
-      border-radius: 6px;
-      padding: 10px;
+      border-radius: 8px;
+      padding: 11px 12px;
       font: inherit;
-      background: #fff;
+      background: var(--panel-strong);
+      color: var(--text);
+      outline: none;
+    }
+
+    input:focus, select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(180, 86, 53, 0.15);
     }
 
     .summary {
       color: var(--muted);
-      margin-bottom: 10px;
+      margin-bottom: 12px;
       font-size: 14px;
     }
 
     .grid {
       display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-      gap: 10px;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 14px;
     }
 
     .card {
       background: var(--panel);
       border: 1px solid var(--line);
       border-radius: 8px;
-      padding: 14px;
-      min-height: 190px;
+      padding: 16px;
+      min-height: 218px;
       position: relative;
+      box-shadow: 0 8px 22px rgba(85, 55, 33, 0.07);
+      transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      border-color: var(--line-strong);
+      box-shadow: 0 16px 32px rgba(85, 55, 33, 0.12);
     }
 
     .card h2 {
       font-size: 17px;
-      margin: 0 0 6px;
-      padding-right: 96px;
+      margin: 0 0 8px;
+      line-height: 1.35;
+    }
+
+    .card.has-image h2 {
+      padding-right: 104px;
     }
 
     .food-image {
-      width: 82px;
-      height: 82px;
+      width: 88px;
+      height: 88px;
       border: 1px solid var(--line);
       border-radius: 8px;
       object-fit: cover;
       position: absolute;
-      top: 14px;
-      right: 14px;
-      background: #edf5f3;
+      top: 16px;
+      right: 16px;
+      background: #f2ebe2;
+      box-shadow: 0 8px 18px rgba(57, 40, 28, 0.12);
     }
 
     .card.has-image .meta,
@@ -632,80 +744,104 @@ PUBLIC_HTML = r"""
       font-size: 14px;
     }
 
+    .meta {
+      margin-bottom: 3px;
+    }
+
+    .comments {
+      margin-top: 8px;
+    }
+
     .links {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
-      margin-top: 10px;
+      margin-top: 12px;
     }
 
     .links a {
       background: var(--accent-soft);
-      border-radius: 6px;
-      padding: 5px 8px;
+      border: 1px solid #efc6b2;
+      border-radius: 8px;
+      padding: 6px 9px;
       font-size: 13px;
+      color: var(--accent-strong);
+      font-weight: 650;
+    }
+
+    .links a:first-child {
+      background: var(--sage-soft);
+      border-color: #c8dfcf;
+      color: #315d48;
     }
 
     .tags {
       display: flex;
       flex-wrap: wrap;
-      gap: 5px;
-      margin: 8px 0;
+      gap: 6px;
+      margin: 10px 0;
     }
 
     .tag {
-      background: #eef7f5;
-      color: #0f766e;
-      border: 1px solid #cbe7e2;
+      background: var(--sage-soft);
+      color: #315d48;
+      border: 1px solid #c8dfcf;
       border-radius: 999px;
-      padding: 2px 7px;
+      padding: 3px 8px;
       font-size: 12px;
     }
 
-    .about {
-      margin-top: 22px;
-      border-top: 1px solid var(--line);
-      padding-top: 16px;
-      color: var(--muted);
-      font-size: 14px;
-    }
-
     @media (max-width: 760px) {
-      header { align-items: flex-start; flex-direction: column; }
+      header { padding: 12px 14px; }
+      .header-inner { align-items: flex-start; flex-direction: column; }
+      .intro { grid-template-columns: 1fr; }
+      .intro-title { font-size: 25px; }
       .toolbar { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
   <header>
-    <h1 data-i18n="title">共享美食清單</h1>
-    <div class="header-actions">
-      <div class="lang-switch" aria-label="Language">
-        <button id="langZh" type="button">中文</button>
-        <button id="langJa" type="button">日本語</button>
+    <div class="header-inner">
+      <div class="brand">
+        <div class="brand-mark">食</div>
+        <div>
+          <h1 data-i18n="title">共享美食清單</h1>
+          <div class="subtitle" data-i18n="subtitle">Discord 頻道裡收集的餐廳口袋名單</div>
+        </div>
       </div>
-      <a href="/admin" data-i18n="adminLink">管理後台</a>
+      <div class="header-actions">
+        <div class="lang-switch" aria-label="Language">
+          <button id="langZh" type="button">中文</button>
+          <button id="langJa" type="button">日本語</button>
+        </div>
+        <a class="nav-link" href="/admin" data-i18n="adminLink">管理後台</a>
+      </div>
     </div>
   </header>
   <main>
+    <section class="intro">
+      <div>
+        <h2 class="intro-title" data-i18n="introTitle">今天想去哪裡吃？</h2>
+        <p class="intro-copy" data-i18n="introCopy">用店名、地區或料理類型快速翻找大家存下來的店。</p>
+      </div>
+      <div id="summary" class="count-pill"></div>
+    </section>
     <div class="toolbar">
       <input id="keyword" data-i18n-placeholder="searchPlaceholder" placeholder="搜尋店名、分類、地區、評論">
       <select id="area"><option value="">全部地區</option></select>
       <select id="category"><option value="">全部分類</option></select>
     </div>
-    <div id="summary" class="summary"></div>
     <div id="grid" class="grid"></div>
-    <section class="about">
-      <strong>About this project</strong><br>
-      Discord messages are saved into a SQLite restaurant database, then shown here through a FastAPI public page.
-      The same data can be synced to Google Sheets and imported into Google My Maps. The bot runs on a GCP VM with systemd and HTTPS.
-    </section>
   </main>
 
   <script>
     const translations = {
       zh: {
         title: "共享美食清單",
+        subtitle: "Discord 頻道裡收集的餐廳口袋名單",
+        introTitle: "今天想去哪裡吃？",
+        introCopy: "用店名、地區或料理類型快速翻找大家存下來的店。",
         adminLink: "管理後台",
         searchPlaceholder: "搜尋店名、分類、地區、評論",
         allAreas: "全部地區",
@@ -716,6 +852,9 @@ PUBLIC_HTML = r"""
       },
       ja: {
         title: "共有グルメリスト",
+        subtitle: "Discord チャンネルで集めたお店リスト",
+        introTitle: "今日はどこで食べる？",
+        introCopy: "店名・エリア・料理ジャンルから、保存したお店をすぐに探せます。",
         adminLink: "管理画面",
         searchPlaceholder: "店名・分類・エリア・コメントを検索",
         allAreas: "すべてのエリア",
