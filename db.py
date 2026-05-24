@@ -461,6 +461,7 @@ class RestaurantDB:
         restaurant_id: int,
         comment: str,
         created_by: str,
+        source_message_id: int | None = None,
     ) -> Restaurant | None:
         """把評論文字追加到某間餐廳。
 
@@ -483,6 +484,7 @@ class RestaurantDB:
                 restaurant_id=restaurant_id,
                 comment=comment,
                 created_by=created_by,
+                source_message_id=source_message_id,
             )
             conn.execute(
                 "UPDATE restaurants SET comments = ? WHERE id = ?",

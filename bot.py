@@ -227,9 +227,16 @@ class CommentRestaurantSelect(discord.ui.Select):
     選中餐廳後，callback 會呼叫 db.append_comment 寫入 SQLite。
     """
 
-    def __init__(self, restaurants: list[Restaurant], comment: str, created_by: str) -> None:
+    def __init__(
+        self,
+        restaurants: list[Restaurant],
+        comment: str,
+        created_by: str,
+        source_message_id: int | None = None,
+    ) -> None:
         self.comment = comment
         self.created_by = created_by
+        self.source_message_id = source_message_id
         options = [
             discord.SelectOption(
                 label=r.name[:100],
@@ -250,6 +257,7 @@ class CommentRestaurantSelect(discord.ui.Select):
             restaurant_id=int(self.values[0]),
             comment=self.comment,
             created_by=self.created_by,
+            source_message_id=self.source_message_id,
         )
         if not restaurant:
             await interaction.response.send_message("找不到這間餐廳，可能資料被刪除了。", ephemeral=True)
@@ -265,9 +273,15 @@ class CommentRestaurantSelect(discord.ui.Select):
 class CommentRestaurantSelectView(discord.ui.View):
     """評論追加選單的 View 容器。"""
 
-    def __init__(self, restaurants: list[Restaurant], comment: str, created_by: str) -> None:
+    def __init__(
+        self,
+        restaurants: list[Restaurant],
+        comment: str,
+        created_by: str,
+        source_message_id: int | None = None,
+    ) -> None:
         super().__init__(timeout=180)
-        self.add_item(CommentRestaurantSelect(restaurants, comment, created_by))
+        self.add_item(CommentRestaurantSelect(restaurants, comment, created_by, source_message_id))
 
 
 class RestaurantBot(discord.Client):
@@ -479,7 +493,12 @@ async def save_comment_from_message(
 
     await interaction.response.send_message(
         "要把這則評論追加到哪間餐廳？",
-        view=CommentRestaurantSelectView(restaurants, comment, interaction.user.display_name),
+        view=CommentRestaurantSelectView(
+            restaurants,
+            comment,
+            interaction.user.display_name,
+            message.id,
+        ),
         ephemeral=True,
     )
 
@@ -1637,6 +1656,7 @@ async def add_comment(
         restaurant_id=target.id,
         comment=comment,
         created_by=interaction.user.display_name,
+        source_message_id=start_id,
     )
     await interaction.followup.send(
         "已追加評論到這間餐廳。",

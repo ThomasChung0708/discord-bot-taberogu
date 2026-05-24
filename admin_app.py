@@ -166,6 +166,13 @@ def index() -> str:
     return PUBLIC_HTML
 
 
+@app.get("/map", response_class=HTMLResponse)
+def map_index() -> str:
+    """公開地圖頁。"""
+
+    return MAP_HTML
+
+
 @app.get("/admin", response_class=HTMLResponse)
 def admin_index() -> str:
     """管理後台首頁。
@@ -220,6 +227,17 @@ def get_restaurant(restaurant_id: int) -> dict:
     if not restaurant:
         raise HTTPException(status_code=404, detail="找不到這間餐廳")
     return restaurant_to_dict(restaurant)
+
+
+@app.get("/api/restaurants/{restaurant_id}/comments")
+def list_restaurant_comments(restaurant_id: int) -> dict:
+    """取得單一餐廳的正式評論列。"""
+
+    if not db.get(restaurant_id):
+        raise HTTPException(status_code=404, detail="找不到這間餐廳")
+    return {
+        "comments": [comment_to_dict(comment) for comment in db.comments_for(restaurant_id)]
+    }
 
 
 @app.put("/api/restaurants/{restaurant_id}")
@@ -815,6 +833,7 @@ PUBLIC_HTML = r"""
           <button id="langZh" type="button">中文</button>
           <button id="langJa" type="button">日本語</button>
         </div>
+        <a class="nav-link" href="/map" data-i18n="mapLink">地圖</a>
         <a class="nav-link" href="/admin" data-i18n="adminLink">管理後台</a>
       </div>
     </div>
@@ -842,6 +861,7 @@ PUBLIC_HTML = r"""
         subtitle: "Discord 頻道裡收集的餐廳口袋名單",
         introTitle: "今天想去哪裡吃？",
         introCopy: "用店名、地區或料理類型快速翻找大家存下來的店。",
+        mapLink: "地圖",
         adminLink: "管理後台",
         searchPlaceholder: "搜尋店名、分類、地區、評論",
         allAreas: "全部地區",
@@ -855,6 +875,7 @@ PUBLIC_HTML = r"""
         subtitle: "Discord チャンネルで集めたお店リスト",
         introTitle: "今日はどこで食べる？",
         introCopy: "店名・エリア・料理ジャンルから、保存したお店をすぐに探せます。",
+        mapLink: "地図",
         adminLink: "管理画面",
         searchPlaceholder: "店名・分類・エリア・コメントを検索",
         allAreas: "すべてのエリア",
@@ -939,7 +960,7 @@ PUBLIC_HTML = r"""
           <div class="meta">ID ${restaurant.id} / ${escapeHtml(restaurant.category)} ${escapeHtml(restaurant.area || "")}</div>
           <div class="meta">${priceText(restaurant)}</div>
           <div class="tags">${tagHtml(restaurant.tags || restaurant.keywords || [])}</div>
-          <div class="comments">${escapeHtml(shortText(restaurant.comments || ""))}</div>
+          <div class="comments">${escapeHtml(shortText(displayCommentText(restaurant)))}</div>
           <div class="links">
             ${restaurant.google_maps_url ? `<a target="_blank" rel="noreferrer" href="${escapeAttr(restaurant.google_maps_url)}">Google Maps</a>` : ""}
             ${restaurant.tabelog_url ? `<a target="_blank" rel="noreferrer" href="${escapeAttr(restaurant.tabelog_url)}">食べログ</a>` : ""}
@@ -951,6 +972,15 @@ PUBLIC_HTML = r"""
 
     function shortText(value) {
       return value.length > 120 ? `${value.slice(0, 120)}...` : value;
+    }
+
+    function displayCommentText(restaurant) {
+      const items = restaurant.comment_items || [];
+      if (items.length) {
+        const latest = items[items.length - 1];
+        return latest.comment || "";
+      }
+      return restaurant.comments || "";
     }
 
     function priceText(restaurant) {
@@ -988,6 +1018,485 @@ PUBLIC_HTML = r"""
     $("langZh").addEventListener("click", () => setLanguage("zh"));
     $("langJa").addEventListener("click", () => setLanguage("ja"));
     applyLanguage();
+    loadRestaurants();
+  </script>
+</body>
+</html>
+"""
+
+
+MAP_HTML = r"""
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>共享美食地圖</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIINfQ3/24hP7KkC0Q8Y8x8tJwQqgN4iXkk="
+    crossorigin=""
+  >
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f8f3ee;
+      --panel: #fffdf9;
+      --text: #2d251f;
+      --muted: #7b6d62;
+      --line: #ead8c8;
+      --accent: #b45635;
+      --accent-strong: #893d27;
+      --sage: #4f7864;
+      --sage-soft: #e6f0e8;
+      --shadow: 0 14px 34px rgba(97, 63, 40, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #fff8f1 0, var(--bg) 260px, #f7f1eb 100%);
+      color: var(--text);
+      font-family: "Yu Gothic UI", "Hiragino Sans", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+
+    header {
+      background: rgba(255, 253, 249, 0.94);
+      border-bottom: 1px solid rgba(234, 216, 200, 0.85);
+      padding: 14px 24px;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      backdrop-filter: blur(16px);
+    }
+
+    .header-inner {
+      max-width: 1180px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      border-radius: 8px;
+      background: var(--accent);
+      color: #fff7ed;
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+      box-shadow: 0 8px 18px rgba(180, 86, 53, 0.22);
+    }
+
+    h1 {
+      font-size: 20px;
+      margin: 0;
+      line-height: 1.2;
+    }
+
+    .subtitle {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .nav-link {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 7px 10px;
+      background: #fff;
+      color: var(--text);
+      font-size: 14px;
+      text-decoration: none;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 22px 18px 34px;
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1fr 160px 160px;
+      gap: 10px;
+      margin-bottom: 14px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 253, 249, 0.9);
+      box-shadow: var(--shadow);
+    }
+
+    input, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 11px 12px;
+      font: inherit;
+      background: #fff;
+      color: var(--text);
+      outline: none;
+    }
+
+    input:focus, select:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(180, 86, 53, 0.15);
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 14px;
+      align-items: stretch;
+    }
+
+    #map {
+      height: min(72vh, 720px);
+      min-height: 520px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #efe5da;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .side {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      min-height: 520px;
+      max-height: min(72vh, 720px);
+      overflow: auto;
+    }
+
+    .status {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 14px;
+      position: sticky;
+      top: 0;
+      background: var(--panel);
+      z-index: 1;
+    }
+
+    .restaurant {
+      width: 100%;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      padding: 12px 14px;
+      cursor: pointer;
+      font: inherit;
+    }
+
+    .restaurant:hover {
+      background: #fff8f1;
+    }
+
+    .restaurant strong {
+      display: block;
+      font-size: 15px;
+      margin-bottom: 4px;
+    }
+
+    .meta {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .tag-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 7px;
+    }
+
+    .tag {
+      background: var(--sage-soft);
+      color: #315d48;
+      border: 1px solid #c8dfcf;
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: 12px;
+    }
+
+    .popup-title {
+      font-weight: 800;
+      margin-bottom: 4px;
+    }
+
+    .popup-links {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+
+    .popup-links a {
+      color: var(--accent-strong);
+      text-decoration: none;
+      font-weight: 700;
+    }
+
+    @media (max-width: 860px) {
+      header { padding: 12px 14px; }
+      .header-inner { align-items: flex-start; flex-direction: column; }
+      .toolbar { grid-template-columns: 1fr; }
+      .layout { grid-template-columns: 1fr; }
+      #map { min-height: 420px; height: 56vh; }
+      .side { max-height: none; min-height: auto; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <div class="brand">
+        <div class="brand-mark">地</div>
+        <div>
+          <h1>共享美食地圖</h1>
+          <div class="subtitle">直接讀取資料庫餐廳，逐步標在 OpenStreetMap 上</div>
+        </div>
+      </div>
+      <div class="actions">
+        <a class="nav-link" href="/">清單</a>
+        <a class="nav-link" href="/admin">管理後台</a>
+      </div>
+    </div>
+  </header>
+  <main>
+    <div class="toolbar">
+      <input id="keyword" placeholder="搜尋店名、分類、地區">
+      <select id="area"><option value="">全部地區</option></select>
+      <select id="category"><option value="">全部分類</option></select>
+    </div>
+    <div class="layout">
+      <div id="map"></div>
+      <aside class="side">
+        <div id="status" class="status">讀取餐廳資料中...</div>
+        <div id="list"></div>
+      </aside>
+    </div>
+  </main>
+
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script>
+    const state = {
+      restaurants: [],
+      markers: new Map(),
+      map: null,
+      layer: null,
+      markerBounds: [],
+      geocoded: 0,
+      failed: 0
+    };
+    const $ = (id) => document.getElementById(id);
+
+    function initMap() {
+      if (!window.L) {
+        $("status").textContent = "地圖套件載入失敗，請確認瀏覽器可以連到 Leaflet CDN。";
+        return;
+      }
+      state.map = L.map("map", { scrollWheelZoom: true }).setView([35.681236, 139.767125], 10);
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        maxZoom: 19,
+        attribution: "&copy; OpenStreetMap contributors"
+      }).addTo(state.map);
+      state.layer = L.layerGroup().addTo(state.map);
+    }
+
+    function params() {
+      const values = new URLSearchParams();
+      if ($("keyword").value.trim()) values.set("keyword", $("keyword").value.trim());
+      if ($("area").value) values.set("area", $("area").value);
+      if ($("category").value) values.set("category", $("category").value);
+      return values.toString();
+    }
+
+    async function loadRestaurants() {
+      const response = await fetch(`/api/restaurants?${params()}`);
+      const data = await response.json();
+      state.restaurants = data.restaurants.sort((a, b) => a.id - b.id);
+      fillSelect($("area"), "全部地區", data.areas || []);
+      fillSelect($("category"), "全部分類", data.categories || []);
+      renderList();
+      await renderMarkers();
+    }
+
+    function fillSelect(select, label, values) {
+      const current = select.value;
+      select.innerHTML = `<option value="">${label}</option>`;
+      values.forEach((value) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = value;
+        select.appendChild(option);
+      });
+      if (values.includes(current)) select.value = current;
+    }
+
+    function renderList() {
+      $("list").innerHTML = "";
+      state.restaurants.forEach((restaurant) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "restaurant";
+        button.innerHTML = `
+          <strong>${escapeHtml(restaurant.name)}</strong>
+          <div class="meta">ID ${restaurant.id} / ${escapeHtml(restaurant.category)} ${escapeHtml(restaurant.area || "")}</div>
+          <div class="tag-row">${(restaurant.tags || restaurant.keywords || []).slice(0, 4).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("")}</div>
+        `;
+        button.addEventListener("click", () => focusRestaurant(restaurant.id));
+        $("list").appendChild(button);
+      });
+    }
+
+    async function renderMarkers() {
+      if (!state.map || !state.layer) return;
+      state.layer.clearLayers();
+      state.markers.clear();
+      state.markerBounds = [];
+      state.geocoded = 0;
+      state.failed = 0;
+      updateStatus("標記餐廳位置中...");
+
+      for (const restaurant of state.restaurants.slice(0, 120)) {
+        const cached = cachedCoords(restaurant);
+        const coords = cached || await geocodeRestaurant(restaurant);
+        if (!coords) {
+          state.failed += 1;
+          updateStatus();
+          continue;
+        }
+        addMarker(restaurant, coords);
+        state.geocoded += 1;
+        updateStatus();
+        if (!cached) await wait(1100);
+      }
+
+      if (state.markerBounds.length) {
+        state.map.fitBounds(state.markerBounds, { padding: [26, 26], maxZoom: 14 });
+      }
+      updateStatus();
+    }
+
+    function addMarker(restaurant, coords) {
+      const marker = L.marker([coords.lat, coords.lon]).bindPopup(popupHtml(restaurant));
+      marker.addTo(state.layer);
+      state.markers.set(restaurant.id, marker);
+      state.markerBounds.push([coords.lat, coords.lon]);
+    }
+
+    function focusRestaurant(id) {
+      const marker = state.markers.get(id);
+      if (!marker) return;
+      state.map.setView(marker.getLatLng(), 15);
+      marker.openPopup();
+    }
+
+    function popupHtml(restaurant) {
+      return `
+        <div class="popup-title">${escapeHtml(restaurant.name)}</div>
+        <div>${escapeHtml(restaurant.category)} / ${escapeHtml(restaurant.area || "")}</div>
+        <div class="popup-links">
+          ${restaurant.google_maps_url ? `<a href="${escapeAttr(restaurant.google_maps_url)}" target="_blank" rel="noreferrer">Google Maps</a>` : ""}
+          ${restaurant.tabelog_url ? `<a href="${escapeAttr(restaurant.tabelog_url)}" target="_blank" rel="noreferrer">食べログ</a>` : ""}
+        </div>
+      `;
+    }
+
+    function cacheKey(restaurant) {
+      return `tabelog-map:${restaurant.id}:${restaurant.name}:${restaurant.area || ""}`;
+    }
+
+    function cachedCoords(restaurant) {
+      try {
+        const raw = localStorage.getItem(cacheKey(restaurant));
+        return raw ? JSON.parse(raw) : null;
+      } catch {
+        return null;
+      }
+    }
+
+    async function geocodeRestaurant(restaurant) {
+      const query = [restaurant.name, restaurant.area, "日本"].filter(Boolean).join(" ");
+      try {
+        const url = `https://nominatim.openstreetmap.org/search?format=json&limit=1&accept-language=ja&q=${encodeURIComponent(query)}`;
+        const response = await fetch(url);
+        if (!response.ok) return null;
+        const data = await response.json();
+        if (!data.length) return null;
+        const coords = { lat: Number(data[0].lat), lon: Number(data[0].lon) };
+        if (!Number.isFinite(coords.lat) || !Number.isFinite(coords.lon)) return null;
+        localStorage.setItem(cacheKey(restaurant), JSON.stringify(coords));
+        return coords;
+      } catch {
+        return null;
+      }
+    }
+
+    function updateStatus(message) {
+      if (message) {
+        $("status").textContent = `${message} 目前 ${state.restaurants.length} 間餐廳。`;
+        return;
+      }
+      $("status").textContent = `顯示 ${state.restaurants.length} 間餐廳，已標記 ${state.geocoded} 間，未定位 ${state.failed} 間。`;
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, (char) => ({
+        "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;"
+      }[char]));
+    }
+
+    function escapeAttr(value) {
+      return escapeHtml(value);
+    }
+
+    function wait(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    function debounce(fn, delay) {
+      let timer = null;
+      return (...args) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => fn(...args), delay);
+      };
+    }
+
+    $("keyword").addEventListener("input", debounce(loadRestaurants, 350));
+    $("area").addEventListener("change", loadRestaurants);
+    $("category").addEventListener("change", loadRestaurants);
+    initMap();
     loadRestaurants();
   </script>
 </body>
@@ -1310,6 +1819,7 @@ ADMIN_HTML = r"""
         <button id="adminLangJa" type="button">日本語</button>
       </div>
       <a class="nav-link" href="/" data-i18n="publicPage">公開頁</a>
+      <a class="nav-link" href="/map" data-i18n="mapPage">地圖</a>
       <button id="importSheet" class="primary" data-i18n="importSheet">從 Google Sheet 匯入</button>
       <button id="syncSheet" data-i18n="syncSheet">DB 同步到 Sheet</button>
       <button id="reload" data-i18n="reload">重新整理</button>
@@ -1413,6 +1923,7 @@ ADMIN_HTML = r"""
       zh: {
         adminTitle: "食べログ Bot 管理後台",
         publicPage: "公開頁",
+        mapPage: "地圖",
         importSheet: "從 Google Sheet 匯入",
         syncSheet: "DB 同步到 Sheet",
         reload: "重新整理",
@@ -1489,6 +2000,7 @@ ADMIN_HTML = r"""
       ja: {
         adminTitle: "食べログ Bot 管理画面",
         publicPage: "公開ページ",
+        mapPage: "地図",
         importSheet: "Google Sheet から取り込み",
         syncSheet: "DB を Sheet に同期",
         reload: "再読み込み",
