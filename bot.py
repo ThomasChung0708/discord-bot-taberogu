@@ -32,7 +32,13 @@ from googleapiclient.errors import HttpError
 from openai import OpenAI
 
 from db import ChatMemoryMessage, Restaurant, RestaurantDB, normalize_area, normalize_search_text
-from extractor import MessageSnippet, extract_restaurant, fetch_tabelog_price_info
+from extractor import (
+    MessageSnippet,
+    extract_restaurant,
+    fetch_tabelog_price_info,
+    find_google_maps_url,
+    find_tabelog_url,
+)
 from sheets_sync import sync_restaurants_to_sheet
 
 
@@ -57,6 +63,12 @@ if GOOGLE_SERVICE_ACCOUNT_FILE and not GOOGLE_SERVICE_ACCOUNT_FILE.is_absolute()
 GOOGLE_SHEETS_WORKSHEET = os.getenv("GOOGLE_SHEETS_WORKSHEET", "restaurants").strip() or "restaurants"
 GOOGLE_MY_MAPS_URL = os.getenv("GOOGLE_MY_MAPS_URL", "").strip()
 PUBLIC_WEB_URL = os.getenv("PUBLIC_WEB_URL", "").strip()
+AUTO_SAVE_RESTAURANT_LINKS = os.getenv("AUTO_SAVE_RESTAURANT_LINKS", "true").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+    "off",
+}
 CHAT_MEMORY_ENABLED = os.getenv("CHAT_MEMORY_ENABLED", "true").strip().lower() not in {
     "0",
     "false",
@@ -321,6 +333,10 @@ async def on_message(message: discord.Message) -> None:
 
     if message.author.bot or not client.user:
         return
+    if AUTO_SAVE_RESTAURANT_LINKS and has_restaurant_link(message.content):
+        await remember_chat_message(message)
+        await auto_save_restaurant_from_message(message)
+        return
     if client.user not in message.mentions:
         await remember_chat_message(message)
         return
@@ -449,6 +465,70 @@ def summarize_chat_memory(existing_summary: str, messages: list[ChatMemoryMessag
         timeout=20,
     )
     return (response.choices[0].message.content or "").strip()
+
+
+def has_restaurant_link(text: str) -> bool:
+    """Return True when a message contains a supported restaurant source URL."""
+
+    return bool(find_tabelog_url(text) or find_google_maps_url(text))
+
+
+async def auto_save_restaurant_from_message(message: discord.Message) -> None:
+    """Automatically store restaurants when someone posts Tabelog or Google Maps."""
+
+    snippets = await snippets_for_target_message(message)
+    if not snippets:
+        return
+
+    try:
+        result = await asyncio.to_thread(
+            extract_restaurant,
+            client=openai_client,
+            model=OPENAI_MODEL,
+            messages=snippets,
+        )
+    except Exception as exc:
+        print(f"auto_save_restaurant failed: {exc}")
+        await message.reply(
+            "我看到餐廳連結了，但剛剛自動保存失敗。可以稍後再試，或用右鍵「保存餐廳資訊」。",
+            mention_author=False,
+        )
+        return
+
+    if not result.name:
+        await message.reply(
+            "我看到餐廳連結了，但抓不到店名，所以先不自動保存。",
+            mention_author=False,
+        )
+        return
+
+    restaurant_id = db.add_restaurant(
+        name=result.name,
+        category=result.category,
+        area=result.area,
+        tabelog_url=result.tabelog_url,
+        google_maps_url=result.google_maps_url,
+        comments=result.comments,
+        keywords=result.keywords + [result.category],
+        source_channel_id=message.channel.id,
+        source_message_id=message.id,
+        created_by="auto-save",
+        recommended_by=getattr(message.author, "display_name", str(message.author)),
+        image_url=result.image_url,
+        lunch_budget_text=result.lunch_budget_text,
+        lunch_budget_min=result.lunch_budget_min,
+        lunch_budget_max=result.lunch_budget_max,
+        dinner_budget_text=result.dinner_budget_text,
+        dinner_budget_min=result.dinner_budget_min,
+        dinner_budget_max=result.dinner_budget_max,
+        price_updated_at=result.price_updated_at,
+    )
+    restaurant = db.get(restaurant_id)
+    await message.reply(
+        f"已自動儲存這間餐廳。餐廳 ID：{restaurant_id}\n推薦者：{message.author.display_name}",
+        embed=restaurant_embed(restaurant) if restaurant else None,
+        mention_author=False,
+    )
 
 
 @client.tree.context_menu(name="保存餐廳資訊")
