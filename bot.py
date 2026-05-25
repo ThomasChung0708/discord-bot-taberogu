@@ -63,6 +63,7 @@ if GOOGLE_SERVICE_ACCOUNT_FILE and not GOOGLE_SERVICE_ACCOUNT_FILE.is_absolute()
 GOOGLE_SHEETS_WORKSHEET = os.getenv("GOOGLE_SHEETS_WORKSHEET", "restaurants").strip() or "restaurants"
 GOOGLE_MY_MAPS_URL = os.getenv("GOOGLE_MY_MAPS_URL", "").strip()
 PUBLIC_WEB_URL = os.getenv("PUBLIC_WEB_URL", "").strip()
+PUBLIC_MAP_URL = os.getenv("PUBLIC_MAP_URL", "https://discord-bottaberogudb.org/map").strip()
 AUTO_SAVE_RESTAURANT_LINKS = os.getenv("AUTO_SAVE_RESTAURANT_LINKS", "true").strip().lower() not in {
     "0",
     "false",
@@ -1899,32 +1900,32 @@ async def sync_google_sheet_from_message(message: discord.Message) -> None:
 
 
 async def send_map_url(message: discord.Message) -> None:
-    """@bot 地圖：回覆 My Maps 分享網址。"""
+    """@bot 地圖：回覆公開地圖頁網址。"""
 
-    if not GOOGLE_MY_MAPS_URL:
+    if not PUBLIC_MAP_URL:
         await message.reply(
-            "還沒有設定 My Maps 網址。請先在 .env 加上 GOOGLE_MY_MAPS_URL。",
+            "還沒有設定地圖網頁網址。請先在 .env 加上 PUBLIC_MAP_URL。",
             mention_author=False,
         )
         return
     await message.reply(
-        f"餐廳地圖在這裡：\n{GOOGLE_MY_MAPS_URL}",
+        f"餐廳地圖在這裡：\n{PUBLIC_MAP_URL}",
         mention_author=False,
     )
 
 
-@client.tree.command(name="map", description="顯示 Google My Maps 地圖網址")
+@client.tree.command(name="map", description="顯示餐廳地圖網頁網址")
 async def map_command(interaction: discord.Interaction) -> None:
-    """slash command：顯示 My Maps 分享網址。"""
+    """slash command：顯示公開地圖頁網址。"""
 
-    if not GOOGLE_MY_MAPS_URL:
+    if not PUBLIC_MAP_URL:
         await interaction.response.send_message(
-            "還沒有設定 My Maps 網址。請先在 .env 加上 GOOGLE_MY_MAPS_URL。",
+            "還沒有設定地圖網頁網址。請先在 .env 加上 PUBLIC_MAP_URL。",
             ephemeral=True,
         )
         return
     await interaction.response.send_message(
-        f"餐廳地圖在這裡：\n{GOOGLE_MY_MAPS_URL}",
+        f"餐廳地圖在這裡：\n{PUBLIC_MAP_URL}",
         ephemeral=False,
     )
 
