@@ -44,6 +44,7 @@ class Restaurant:
     source_channel_id: int
     source_message_id: int | None
     created_by: str
+    recommended_by: str | None
     created_at: str
     lunch_budget_text: str | None = None
     lunch_budget_min: int | None = None
@@ -132,6 +133,7 @@ class RestaurantDB:
                     source_channel_id INTEGER NOT NULL,
                     source_message_id INTEGER,
                     created_by TEXT NOT NULL,
+                    recommended_by TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     lunch_budget_text TEXT,
                     lunch_budget_min INTEGER,
@@ -152,6 +154,7 @@ class RestaurantDB:
             self._ensure_column(conn, "dinner_budget_min", "INTEGER")
             self._ensure_column(conn, "dinner_budget_max", "INTEGER")
             self._ensure_column(conn, "price_updated_at", "TEXT")
+            self._ensure_column(conn, "recommended_by", "TEXT")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_restaurants_category ON restaurants(category)"
             )
@@ -320,6 +323,7 @@ class RestaurantDB:
         source_channel_id: int,
         source_message_id: int | None,
         created_by: str,
+        recommended_by: str | None = None,
         image_url: str | None = None,
         lunch_budget_text: str | None = None,
         lunch_budget_min: int | None = None,
@@ -343,13 +347,13 @@ class RestaurantDB:
                 """
                 INSERT OR REPLACE INTO restaurants (
                     id, name, category, area, tabelog_url, google_maps_url, image_url, comments,
-                    keywords_json, source_channel_id, source_message_id, created_by,
+                    keywords_json, source_channel_id, source_message_id, created_by, recommended_by,
                     lunch_budget_text, lunch_budget_min, lunch_budget_max,
                     dinner_budget_text, dinner_budget_min, dinner_budget_max, price_updated_at
                 )
                 VALUES (
                     (SELECT id FROM restaurants WHERE name = ? AND COALESCE(tabelog_url, '') = COALESCE(?, '')),
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -366,6 +370,7 @@ class RestaurantDB:
                     source_channel_id,
                     source_message_id,
                     created_by,
+                    recommended_by.strip() if recommended_by and recommended_by.strip() else None,
                     lunch_budget_text,
                     lunch_budget_min,
                     lunch_budget_max,
@@ -503,6 +508,7 @@ class RestaurantDB:
         google_maps_url: str | None,
         comments: str,
         keywords: Iterable[str],
+        recommended_by: str | None = None,
         image_url: str | None = None,
         lunch_budget_text: str | None = None,
         lunch_budget_min: int | None = None,
@@ -533,6 +539,7 @@ class RestaurantDB:
                     image_url = ?,
                     comments = ?,
                     keywords_json = ?,
+                    recommended_by = ?,
                     lunch_budget_text = COALESCE(?, lunch_budget_text),
                     lunch_budget_min = COALESCE(?, lunch_budget_min),
                     lunch_budget_max = COALESCE(?, lunch_budget_max),
@@ -551,6 +558,7 @@ class RestaurantDB:
                     image_url.strip() if image_url and image_url.strip() else None,
                     comments.strip(),
                     json.dumps(clean_keywords, ensure_ascii=False),
+                    recommended_by.strip() if recommended_by and recommended_by.strip() else None,
                     lunch_budget_text.strip() if lunch_budget_text and lunch_budget_text.strip() else None,
                     lunch_budget_min,
                     lunch_budget_max,
@@ -578,6 +586,7 @@ class RestaurantDB:
         comments: str,
         keywords: Iterable[str],
         created_by: str = "Google Sheet",
+        recommended_by: str | None = None,
         image_url: str | None = None,
         lunch_budget_text: str | None = None,
         lunch_budget_min: int | None = None,
@@ -610,6 +619,7 @@ class RestaurantDB:
                         image_url = ?,
                         comments = ?,
                         keywords_json = ?,
+                        recommended_by = COALESCE(?, recommended_by),
                         lunch_budget_text = ?,
                         lunch_budget_min = ?,
                         lunch_budget_max = ?,
@@ -628,6 +638,7 @@ class RestaurantDB:
                         image_url.strip() if image_url and image_url.strip() else None,
                         comments.strip(),
                         json.dumps(clean_keywords, ensure_ascii=False),
+                        recommended_by.strip() if recommended_by and recommended_by.strip() else None,
                         lunch_budget_text,
                         lunch_budget_min,
                         lunch_budget_max,
@@ -645,11 +656,11 @@ class RestaurantDB:
                 """
                 INSERT OR REPLACE INTO restaurants (
                     id, name, category, area, tabelog_url, google_maps_url, image_url, comments,
-                    keywords_json, source_channel_id, source_message_id, created_by,
+                    keywords_json, source_channel_id, source_message_id, created_by, recommended_by,
                     lunch_budget_text, lunch_budget_min, lunch_budget_max,
                     dinner_budget_text, dinner_budget_min, dinner_budget_max, price_updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     restaurant_id,
@@ -662,6 +673,7 @@ class RestaurantDB:
                     comments.strip(),
                     json.dumps(clean_keywords, ensure_ascii=False),
                     created_by,
+                    recommended_by.strip() if recommended_by and recommended_by.strip() else None,
                     lunch_budget_text,
                     lunch_budget_min,
                     lunch_budget_max,
@@ -1064,6 +1076,7 @@ class RestaurantDB:
             source_channel_id=int(row["source_channel_id"]),
             source_message_id=row["source_message_id"],
             created_by=row["created_by"],
+            recommended_by=row["recommended_by"],
             created_at=row["created_at"],
             lunch_budget_text=row["lunch_budget_text"],
             lunch_budget_min=row["lunch_budget_min"],

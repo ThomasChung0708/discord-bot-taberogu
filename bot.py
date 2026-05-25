@@ -465,6 +465,7 @@ async def save_restaurant_from_message(
         interaction=interaction,
         snippets=snippets,
         source_message_id=message.id,
+        recommended_by=getattr(message.author, "display_name", str(message.author)),
     )
 
 
@@ -519,6 +520,7 @@ async def save_extracted_restaurant(
     interaction: discord.Interaction,
     snippets: list[MessageSnippet],
     source_message_id: int | None,
+    recommended_by: str | None = None,
 ) -> None:
     """共用的餐廳保存流程。
 
@@ -567,6 +569,7 @@ async def save_extracted_restaurant(
         source_channel_id=interaction.channel_id or 0,
         source_message_id=source_message_id,
         created_by=interaction.user.display_name,
+        recommended_by=recommended_by,
         image_url=result.image_url,
         lunch_budget_text=result.lunch_budget_text,
         lunch_budget_min=result.lunch_budget_min,
@@ -578,8 +581,9 @@ async def save_extracted_restaurant(
     )
 
     restaurant = db.get(restaurant_id)
+    recommender_line = f"\n推薦者：{recommended_by}" if recommended_by else ""
     await interaction.followup.send(
-        f"已儲存這間餐廳。餐廳 ID：{restaurant_id}",
+        f"已儲存這間餐廳。餐廳 ID：{restaurant_id}{recommender_line}",
         embed=restaurant_embed(restaurant) if restaurant else None,
         ephemeral=False,
     )
@@ -1951,6 +1955,8 @@ def restaurant_embed(restaurant: Restaurant) -> discord.Embed:
     embed.add_field(name="分類", value=restaurant.category, inline=True)
     if restaurant.area:
         embed.add_field(name="地區", value=restaurant.area, inline=True)
+    if restaurant.recommended_by:
+        embed.add_field(name="推薦者", value=restaurant.recommended_by, inline=True)
     if restaurant.tabelog_url:
         embed.add_field(name="食べログ", value=restaurant.tabelog_url, inline=False)
     if restaurant.google_maps_url:

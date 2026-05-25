@@ -84,6 +84,7 @@ class RestaurantPayload(BaseModel):
     tabelog_url: str | None = None
     google_maps_url: str | None = None
     image_url: str | None = None
+    recommended_by: str | None = None
     comments: str = ""
     keywords: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
@@ -137,6 +138,7 @@ def restaurant_to_dict(restaurant: Restaurant) -> dict:
         "source_channel_id": restaurant.source_channel_id,
         "source_message_id": restaurant.source_message_id,
         "created_by": restaurant.created_by,
+        "recommended_by": restaurant.recommended_by,
         "created_at": restaurant.created_at,
         "lunch_budget_text": restaurant.lunch_budget_text,
         "lunch_budget_min": restaurant.lunch_budget_min,
@@ -258,6 +260,7 @@ def update_restaurant(
         tabelog_url=payload.tabelog_url,
         google_maps_url=payload.google_maps_url,
         image_url=payload.image_url,
+        recommended_by=payload.recommended_by,
         comments=payload.comments,
         keywords=payload.tags or payload.keywords,
         lunch_budget_text=payload.lunch_budget_text,
@@ -382,6 +385,7 @@ def import_sheet(_: None = Depends(require_admin)) -> dict:
             google_maps_url=row.get("google_maps_url", "").strip() or None,
             tabelog_url=row.get("tabelog_url", "").strip() or None,
             image_url=row.get("image_url", "").strip() or None,
+            recommended_by=row.get("recommended_by", "").strip() or None,
             comments=row.get("comments", "").strip(),
             keywords=keywords or [name, category],
             lunch_budget_text=row.get("lunch_budget", "").strip() or None,
@@ -889,7 +893,8 @@ PUBLIC_HTML = r"""
         allCategories: "全部分類",
         summary: (count) => `目前顯示 ${count} 間餐廳`,
         lunch: "午餐",
-        dinner: "晚餐"
+        dinner: "晚餐",
+        recommendedBy: "推薦者"
       },
       ja: {
         title: "共有グルメリスト",
@@ -903,7 +908,8 @@ PUBLIC_HTML = r"""
         allCategories: "すべての分類",
         summary: (count) => `${count} 件のレストランを表示中`,
         lunch: "ランチ",
-        dinner: "ディナー"
+        dinner: "ディナー",
+        recommendedBy: "推薦者"
       }
     };
     const savedLanguage = localStorage.getItem("tabelogLanguage");
@@ -979,6 +985,7 @@ PUBLIC_HTML = r"""
           ${restaurant.image_url ? `<img class="food-image" src="${escapeAttr(restaurant.image_url)}" alt="${escapeAttr(restaurant.name)}" onerror="this.remove()">` : ""}
           <h2>${escapeHtml(restaurant.name)}</h2>
           <div class="meta">ID ${restaurant.id} / ${escapeHtml(restaurant.category)} ${escapeHtml(restaurant.area || "")}</div>
+          ${restaurant.recommended_by ? `<div class="meta">${t("recommendedBy")}：${escapeHtml(restaurant.recommended_by)}</div>` : ""}
           <div class="meta">${priceText(restaurant)}</div>
           <div class="tags">${tagHtml(restaurant.tags || restaurant.keywords || [])}</div>
           <div class="comments">${escapeHtml(shortText(displayCommentText(restaurant)))}</div>
@@ -1594,6 +1601,9 @@ ADMIN_HTML = r"""
           <label><span data-i18n="area">地區</span>
             <input id="areaInput">
           </label>
+          <label><span data-i18n="recommendedBy">推薦者</span>
+            <input id="recommendedBy">
+          </label>
           <label><span data-i18n="keywords">關鍵字，用逗號分隔</span>
             <input id="keywordsInput">
           </label>
@@ -1672,6 +1682,7 @@ ADMIN_HTML = r"""
         name: "店名",
         category: "分類",
         area: "地區",
+        recommendedBy: "推薦者",
         keywords: "關鍵字，用逗號分隔",
         lunchBudget: "午餐價格",
         dinnerBudget: "晚餐價格",
@@ -1749,6 +1760,7 @@ ADMIN_HTML = r"""
         name: "店名",
         category: "分類",
         area: "エリア",
+        recommendedBy: "推薦者",
         keywords: "キーワード（カンマ区切り）",
         lunchBudget: "ランチ価格",
         dinnerBudget: "ディナー価格",
@@ -1993,6 +2005,7 @@ ADMIN_HTML = r"""
       $("name").value = restaurant.name || "";
       $("categoryInput").value = restaurant.category || "";
       $("areaInput").value = restaurant.area || "";
+      $("recommendedBy").value = restaurant.recommended_by || "";
       $("keywordsInput").value = (restaurant.tags || restaurant.keywords || []).join(", ");
       $("lunchBudget").value = restaurant.lunch_budget_text || "";
       $("dinnerBudget").value = restaurant.dinner_budget_text || "";
@@ -2039,6 +2052,7 @@ ADMIN_HTML = r"""
         tabelog_url: $("tabelogUrl").value.trim() || null,
         google_maps_url: $("googleMapsUrl").value.trim() || null,
         image_url: $("imageUrl").value.trim() || null,
+        recommended_by: $("recommendedBy").value.trim() || null,
         comments: $("comments").value.trim(),
         keywords: $("keywordsInput").value.split(",").map((item) => item.trim()).filter(Boolean),
         tags: $("keywordsInput").value.split(",").map((item) => item.trim()).filter(Boolean),
