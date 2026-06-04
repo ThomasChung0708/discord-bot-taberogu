@@ -35,7 +35,6 @@ from db import ChatMemoryMessage, Restaurant, RestaurantDB, normalize_area, norm
 from extractor import (
     MessageSnippet,
     extract_restaurant,
-    fetch_tabelog_business_hours,
     fetch_tabelog_price_info,
     find_google_maps_url,
     find_tabelog_url,
@@ -357,9 +356,6 @@ async def on_message(message: discord.Message) -> None:
     if is_enrich_prices_message(keyword):
         await enrich_prices_from_message(message, keyword)
         return
-    if is_enrich_hours_message(keyword):
-        await enrich_hours_from_message(message, keyword)
-        return
 
     recommendation_request = parse_recommendation_request(keyword)
     if recommendation_request is not None:
@@ -377,9 +373,6 @@ async def on_message(message: discord.Message) -> None:
         return
     if is_enrich_prices_message(keyword):
         await enrich_prices_from_message(message, keyword)
-        return
-    if is_enrich_hours_message(keyword):
-        await enrich_hours_from_message(message, keyword)
         return
     recommendation_request = parse_recommendation_request(keyword)
     if recommendation_request is not None:
@@ -1855,16 +1848,6 @@ async def enrich_prices(interaction: discord.Interaction, limit: int = 5) -> Non
     await interaction.followup.send(result, ephemeral=True)
 
 
-@client.tree.command(name="enrich_hours", description="從食べログ補抓既有餐廳的營業時間")
-@app_commands.describe(limit="這次最多補幾間，建議 5。最大 20")
-async def enrich_hours(interaction: discord.Interaction, limit: int = 5) -> None:
-    """從已保存的食べログ URL 補抓營業時間。"""
-
-    await interaction.response.defer(thinking=True, ephemeral=True)
-    result = enrich_hours_data(limit)
-    await interaction.followup.send(result[:1900], ephemeral=True)
-
-
 async def enrich_prices_from_message(message: discord.Message, keyword: str) -> None:
     """@bot 補價格：用一般訊息觸發價格補抓。
 
@@ -1917,52 +1900,6 @@ def enrich_prices_data(limit: int = 5) -> str:
         lines.extend(updated[:10])
     if not_found:
         lines.append("\n找不到價格：")
-        lines.extend(not_found[:10])
-    return "\n".join(lines)
-
-
-async def enrich_hours_from_message(message: discord.Message, keyword: str) -> None:
-    """@bot 補營業時間：用一般訊息觸發營業時間補抓。"""
-
-    limit = parse_first_int(keyword) or 5
-    status_message = await message.reply("正在補抓食べログ營業時間...", mention_author=False)
-    result = enrich_hours_data(limit)
-    await status_message.edit(content=result[:1900])
-
-
-def enrich_hours_data(limit: int = 5) -> str:
-    """補抓食べログ營業時間並回傳摘要文字。"""
-
-    safe_limit = min(max(limit, 1), 20)
-    restaurants = db.restaurants_missing_business_hours(limit=safe_limit)
-    if not restaurants:
-        return "目前沒有需要補營業時間的餐廳，或餐廳沒有食べログ網址。"
-
-    updated = []
-    not_found = []
-    for restaurant in restaurants:
-        hours = fetch_tabelog_business_hours(restaurant.tabelog_url)
-        if not hours.business_hours_updated_at:
-            not_found.append(restaurant.name)
-            continue
-        db.update_business_hours(
-            restaurant_id=restaurant.id,
-            business_hours_text=hours.business_hours_text,
-            business_hours_updated_at=hours.business_hours_updated_at,
-        )
-        first_line = (hours.business_hours_text or "").splitlines()[0] if hours.business_hours_text else "-"
-        updated.append(f"ID {restaurant.id}: {restaurant.name} {first_line}")
-
-    lines = [
-        f"這次檢查 {len(restaurants)} 間。",
-        f"成功更新：{len(updated)}",
-        f"找不到營業時間：{len(not_found)}",
-    ]
-    if updated:
-        lines.append("\n更新成功：")
-        lines.extend(updated[:10])
-    if not_found:
-        lines.append("\n找不到營業時間：")
         lines.extend(not_found[:10])
     return "\n".join(lines)
 
@@ -2196,16 +2133,6 @@ def is_enrich_prices_message(keyword: str) -> bool:
     normalized = keyword.strip().lower().replace("　", " ")
     normalized = re.sub(r"[：:，,。.!！?？]+", " ", normalized).strip()
     return normalized.startswith(("補價格", "補抓價格", "更新價格", "enrich_prices", "enrich prices"))
-
-
-def is_enrich_hours_message(keyword: str) -> bool:
-    """判斷 @bot 訊息是不是補抓營業時間。"""
-
-    normalized = keyword.strip().lower().replace("　", " ")
-    normalized = re.sub(r"[：:，,。.!！?？]+", " ", normalized).strip()
-    return normalized.startswith(
-        ("補營業時間", "補抓營業時間", "更新營業時間", "補営業時間", "enrich_hours", "enrich hours")
-    )
 
 
 def parse_first_int(value: str) -> int | None:
