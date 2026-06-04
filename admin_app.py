@@ -350,13 +350,20 @@ def sync_sheet(_: None = Depends(require_admin)) -> dict:
     if not GOOGLE_SERVICE_ACCOUNT_FILE or not GOOGLE_SERVICE_ACCOUNT_FILE.exists():
         raise HTTPException(status_code=400, detail="找不到 Google service account JSON")
 
-    count = sync_restaurants_to_sheet(
+    result = sync_restaurants_to_sheet(
         restaurants=db.all(),
         spreadsheet_id=GOOGLE_SHEETS_ID,
         credentials_path=GOOGLE_SERVICE_ACCOUNT_FILE,
         worksheet_name=GOOGLE_SHEETS_WORKSHEET,
     )
-    return {"ok": True, "count": count}
+    return {
+        "ok": True,
+        "count": result.count,
+        "verified_count": result.verified_count,
+        "max_id": result.max_id,
+        "worksheet_name": result.worksheet_name,
+        "worksheet_url": result.worksheet_url,
+    }
 
 
 @app.post("/api/import-sheet")
@@ -1782,7 +1789,8 @@ ADMIN_HTML = r"""
         syncConfirm: "這會用目前資料庫內容覆蓋 Google Sheet。確定要繼續嗎？",
         syncing: "同步中...",
         syncFailed: "同步失敗",
-        syncDone: (count) => `已同步 ${count} 筆餐廳到 Google Sheet。`,
+        syncDone: (count, verified, maxId, worksheet) =>
+          `已同步 ${count} 筆餐廳到 Google Sheet。\nSheet 分頁：${worksheet}\n讀回確認：${verified} 筆 / 最大 ID：${maxId ?? "-"}`,
         passwordRequired: "請輸入管理密碼。",
         passwordWrong: "管理密碼錯誤。"
       },
@@ -1866,7 +1874,8 @@ ADMIN_HTML = r"""
         syncConfirm: "現在の DB 内容で Google Sheet を上書きします。続行しますか？",
         syncing: "同期中...",
         syncFailed: "同期に失敗しました",
-        syncDone: (count) => `${count} 件のレストランを Google Sheet に同期しました。`,
+        syncDone: (count, verified, maxId, worksheet) =>
+          `${count} 件のレストランを Google Sheet に同期しました。\nシート：${worksheet}\n読み戻し確認：${verified} 件 / 最大 ID：${maxId ?? "-"}`,
         passwordRequired: "管理パスワードを入力してください。",
         passwordWrong: "管理パスワードが違います。"
       }
@@ -2355,7 +2364,10 @@ ADMIN_HTML = r"""
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || t("syncFailed"));
-        alert(t("syncDone", data.count));
+        alert(t("syncDone", data.count, data.verified_count, data.max_id, data.worksheet_name));
+        if (data.worksheet_url) {
+          window.open(data.worksheet_url, "_blank", "noopener,noreferrer");
+        }
       } catch (error) {
         alert(error.message);
       } finally {

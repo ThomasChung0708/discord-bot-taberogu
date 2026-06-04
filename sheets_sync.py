@@ -10,6 +10,7 @@ bot.py 不直接碰 Google Sheets API，這樣出錯時比較好定位：
 """
 
 from pathlib import Path
+from dataclasses import dataclass
 
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
@@ -18,6 +19,25 @@ from db import Restaurant
 
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+
+@dataclass(frozen=True)
+class SheetSyncResult:
+    """Result of writing restaurant data to Google Sheets and reading it back."""
+
+    count: int
+    verified_count: int
+    max_id: int | None
+    worksheet_name: str
+    worksheet_gid: int | None
+    spreadsheet_id: str
+
+    @property
+    def worksheet_url(self) -> str:
+        base = f"https://docs.google.com/spreadsheets/d/{self.spreadsheet_id}/edit"
+        if self.worksheet_gid is None:
+            return base
+        return f"{base}#gid={self.worksheet_gid}"
 
 # Google Sheet 第一列欄位名稱。
 # My Maps 匯入時會看到這些欄位，通常用 name + area 定位，name 當標記名稱。
@@ -44,7 +64,7 @@ def sync_restaurants_to_sheet(
     spreadsheet_id: str,
     credentials_path: Path,
     worksheet_name: str = "restaurants",
-) -> int:
+) -> SheetSyncResult:
     """把餐廳清單完整同步到 Google Sheet。
 
     目前策略是「整張覆寫」：
@@ -63,8 +83,9 @@ def sync_restaurants_to_sheet(
     )
     service = build("sheets", "v4", credentials=credentials)
 
+    ordered_restaurants = sorted(restaurants, key=lambda restaurant: restaurant.id)
     values = [SHEET_HEADERS]
-    for restaurant in restaurants:
+    for restaurant in ordered_restaurants:
         # Google Sheets API 期待的是二維陣列：
         # 外層 list = 多列，內層 list = 單列的多個欄位。
         values.append(
@@ -86,7 +107,7 @@ def sync_restaurants_to_sheet(
         )
 
     sheet = service.spreadsheets()
-    ensure_worksheet(sheet, spreadsheet_id, worksheet_name)
+    worksheet_gid = ensure_worksheet(sheet, spreadsheet_id, worksheet_name)
     range_name = f"{worksheet_name}!A:M"
 
     # clear + update 比 append 更適合這個專案：
@@ -101,7 +122,15 @@ def sync_restaurants_to_sheet(
         valueInputOption="RAW",
         body={"values": values},
     ).execute()
-    return len(restaurants)
+    verified_count, max_id = verify_written_restaurants(sheet, spreadsheet_id, worksheet_name)
+    return SheetSyncResult(
+        count=len(ordered_restaurants),
+        verified_count=verified_count,
+        max_id=max_id,
+        worksheet_name=worksheet_name,
+        worksheet_gid=worksheet_gid,
+        spreadsheet_id=spreadsheet_id,
+    )
 
 
 def read_restaurants_from_sheet(
@@ -145,19 +174,34 @@ def read_restaurants_from_sheet(
     return rows
 
 
-def ensure_worksheet(sheet_resource, spreadsheet_id: str, worksheet_name: str) -> None:
+def verify_written_restaurants(sheet_resource, spreadsheet_id: str, worksheet_name: str) -> tuple[int, int | None]:
+    """Read the worksheet back after syncing so the UI can show what actually landed."""
+
+    result = sheet_resource.values().get(
+        spreadsheetId=spreadsheet_id,
+        range=f"{worksheet_name}!A:M",
+    ).execute()
+    values = result.get("values", [])
+    data_rows = [row for row in values[1:] if row and str(row[0]).strip()]
+    ids: list[int] = []
+    for row in data_rows:
+        try:
+            ids.append(int(str(row[0]).strip()))
+        except (ValueError, IndexError):
+            continue
+    return len(data_rows), max(ids) if ids else None
+
+
+def ensure_worksheet(sheet_resource, spreadsheet_id: str, worksheet_name: str) -> int | None:
     """確認指定 worksheet 存在；沒有就自動建立。"""
 
     metadata = sheet_resource.get(spreadsheetId=spreadsheet_id).execute()
-    existing_titles = {
-        item["properties"]["title"]
-        for item in metadata.get("sheets", [])
-        if "properties" in item
-    }
-    if worksheet_name in existing_titles:
-        return
+    for item in metadata.get("sheets", []):
+        properties = item.get("properties", {})
+        if properties.get("title") == worksheet_name:
+            return properties.get("sheetId")
 
-    sheet_resource.batchUpdate(
+    response = sheet_resource.batchUpdate(
         spreadsheetId=spreadsheet_id,
         body={
             "requests": [
@@ -171,3 +215,8 @@ def ensure_worksheet(sheet_resource, spreadsheet_id: str, worksheet_name: str) -
             ]
         },
     ).execute()
+    replies = response.get("replies", [])
+    if replies:
+        properties = replies[0].get("addSheet", {}).get("properties", {})
+        return properties.get("sheetId")
+    return None

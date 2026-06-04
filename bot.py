@@ -1994,7 +1994,7 @@ def sync_google_sheet_data() -> str:
         return "目前沒有餐廳可以同步。"
 
     try:
-        count = sync_restaurants_to_sheet(
+        result = sync_restaurants_to_sheet(
             restaurants=restaurants,
             spreadsheet_id=GOOGLE_SHEETS_ID,
             credentials_path=GOOGLE_SERVICE_ACCOUNT_FILE,
@@ -2018,7 +2018,13 @@ def sync_google_sheet_data() -> str:
         print(f"sync_google_sheet failed: {exc}")
         return "同步 Google Sheet 失敗。請確認 Sheet ID、service account 權限與 JSON 檔。"
 
-    return f"已同步 {count} 筆餐廳到 Google Sheet。My Maps 讀取這張表後會看到最新資料。"
+    return (
+        f"已同步 {result.count} 筆餐廳到 Google Sheet。\n"
+        f"Sheet 分頁：{result.worksheet_name}\n"
+        f"讀回確認：{result.verified_count} 筆 / 最大 ID：{result.max_id or '-'}\n"
+        f"{result.worksheet_url}\n"
+        "My Maps 讀取這張表後會看到最新資料。"
+    )
 
 
 def create_database_backup() -> Path:
