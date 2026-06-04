@@ -53,6 +53,8 @@ class Restaurant:
     dinner_budget_min: int | None = None
     dinner_budget_max: int | None = None
     price_updated_at: str | None = None
+    business_hours_text: str | None = None
+    business_hours_updated_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -142,6 +144,8 @@ class RestaurantDB:
                     dinner_budget_min INTEGER,
                     dinner_budget_max INTEGER,
                     price_updated_at TEXT,
+                    business_hours_text TEXT,
+                    business_hours_updated_at TEXT,
                     UNIQUE(name, tabelog_url)
                 )
                 """
@@ -155,6 +159,8 @@ class RestaurantDB:
             self._ensure_column(conn, "dinner_budget_max", "INTEGER")
             self._ensure_column(conn, "price_updated_at", "TEXT")
             self._ensure_column(conn, "recommended_by", "TEXT")
+            self._ensure_column(conn, "business_hours_text", "TEXT")
+            self._ensure_column(conn, "business_hours_updated_at", "TEXT")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_restaurants_category ON restaurants(category)"
             )
@@ -332,6 +338,8 @@ class RestaurantDB:
         dinner_budget_min: int | None = None,
         dinner_budget_max: int | None = None,
         price_updated_at: str | None = None,
+        business_hours_text: str | None = None,
+        business_hours_updated_at: str | None = None,
     ) -> int:
         """新增或覆蓋同一家餐廳。
 
@@ -349,11 +357,12 @@ class RestaurantDB:
                     id, name, category, area, tabelog_url, google_maps_url, image_url, comments,
                     keywords_json, source_channel_id, source_message_id, created_by, recommended_by,
                     lunch_budget_text, lunch_budget_min, lunch_budget_max,
-                    dinner_budget_text, dinner_budget_min, dinner_budget_max, price_updated_at
+                    dinner_budget_text, dinner_budget_min, dinner_budget_max, price_updated_at,
+                    business_hours_text, business_hours_updated_at
                 )
                 VALUES (
                     (SELECT id FROM restaurants WHERE name = ? AND COALESCE(tabelog_url, '') = COALESCE(?, '')),
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
                 (
@@ -378,6 +387,8 @@ class RestaurantDB:
                     dinner_budget_min,
                     dinner_budget_max,
                     price_updated_at,
+                    business_hours_text.strip() if business_hours_text and business_hours_text.strip() else None,
+                    business_hours_updated_at,
                 ),
             )
             restaurant_id = int(cur.lastrowid or conn.execute("SELECT last_insert_rowid()").fetchone()[0])
@@ -517,6 +528,8 @@ class RestaurantDB:
         dinner_budget_min: int | None = None,
         dinner_budget_max: int | None = None,
         price_updated_at: str | None = None,
+        business_hours_text: str | None = None,
+        business_hours_updated_at: str | None = None,
     ) -> Restaurant | None:
         """更新後台表單送來的餐廳資料。
 
@@ -546,7 +559,9 @@ class RestaurantDB:
                     dinner_budget_text = COALESCE(?, dinner_budget_text),
                     dinner_budget_min = COALESCE(?, dinner_budget_min),
                     dinner_budget_max = COALESCE(?, dinner_budget_max),
-                    price_updated_at = COALESCE(?, price_updated_at)
+                    price_updated_at = COALESCE(?, price_updated_at),
+                    business_hours_text = ?,
+                    business_hours_updated_at = COALESCE(?, business_hours_updated_at)
                 WHERE id = ?
                 """,
                 (
@@ -566,6 +581,8 @@ class RestaurantDB:
                     dinner_budget_min,
                     dinner_budget_max,
                     price_updated_at,
+                    business_hours_text.strip() if business_hours_text and business_hours_text.strip() else None,
+                    business_hours_updated_at,
                     restaurant_id,
                 ),
             )
@@ -595,6 +612,8 @@ class RestaurantDB:
         dinner_budget_min: int | None = None,
         dinner_budget_max: int | None = None,
         price_updated_at: str | None = None,
+        business_hours_text: str | None = None,
+        business_hours_updated_at: str | None = None,
     ) -> int:
         """從 Google Sheet 匯入一間餐廳。
 
@@ -626,7 +645,9 @@ class RestaurantDB:
                         dinner_budget_text = ?,
                         dinner_budget_min = ?,
                         dinner_budget_max = ?,
-                        price_updated_at = ?
+                        price_updated_at = ?,
+                        business_hours_text = COALESCE(?, business_hours_text),
+                        business_hours_updated_at = COALESCE(?, business_hours_updated_at)
                     WHERE id = ?
                     """,
                     (
@@ -646,6 +667,8 @@ class RestaurantDB:
                         dinner_budget_min,
                         dinner_budget_max,
                         price_updated_at,
+                        business_hours_text.strip() if business_hours_text and business_hours_text.strip() else None,
+                        business_hours_updated_at,
                         restaurant_id,
                     ),
                 )
@@ -658,9 +681,10 @@ class RestaurantDB:
                     id, name, category, area, tabelog_url, google_maps_url, image_url, comments,
                     keywords_json, source_channel_id, source_message_id, created_by, recommended_by,
                     lunch_budget_text, lunch_budget_min, lunch_budget_max,
-                    dinner_budget_text, dinner_budget_min, dinner_budget_max, price_updated_at
+                    dinner_budget_text, dinner_budget_min, dinner_budget_max, price_updated_at,
+                    business_hours_text, business_hours_updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     restaurant_id,
@@ -681,6 +705,8 @@ class RestaurantDB:
                     dinner_budget_min,
                     dinner_budget_max,
                     price_updated_at,
+                    business_hours_text.strip() if business_hours_text and business_hours_text.strip() else None,
+                    business_hours_updated_at,
                 ),
             )
             new_id = int(restaurant_id or cur.lastrowid)
@@ -739,6 +765,50 @@ class RestaurantDB:
                 WHERE tabelog_url IS NOT NULL
                   AND trim(tabelog_url) != ''
                   AND price_updated_at IS NULL
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._row_to_restaurant(row) for row in rows]
+
+    def update_business_hours(
+        self,
+        *,
+        restaurant_id: int,
+        business_hours_text: str | None,
+        business_hours_updated_at: str | None,
+    ) -> Restaurant | None:
+        """更新一間餐廳的營業時間。"""
+
+        with self.session() as conn:
+            cur = conn.execute(
+                """
+                UPDATE restaurants
+                SET business_hours_text = ?,
+                    business_hours_updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    business_hours_text.strip() if business_hours_text and business_hours_text.strip() else None,
+                    business_hours_updated_at,
+                    restaurant_id,
+                ),
+            )
+            if cur.rowcount == 0:
+                return None
+        return self.get(restaurant_id)
+
+    def restaurants_missing_business_hours(self, limit: int = 5) -> list[Restaurant]:
+        """取得有食べログ URL、但還沒補營業時間的餐廳。"""
+
+        with self.session() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM restaurants
+                WHERE tabelog_url IS NOT NULL
+                  AND trim(tabelog_url) != ''
+                  AND business_hours_updated_at IS NULL
                 ORDER BY id ASC
                 LIMIT ?
                 """,
@@ -1085,6 +1155,8 @@ class RestaurantDB:
             dinner_budget_min=row["dinner_budget_min"],
             dinner_budget_max=row["dinner_budget_max"],
             price_updated_at=row["price_updated_at"],
+            business_hours_text=row["business_hours_text"],
+            business_hours_updated_at=row["business_hours_updated_at"],
         )
 
     @staticmethod

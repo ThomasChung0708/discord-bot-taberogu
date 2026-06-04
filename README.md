@@ -13,6 +13,7 @@
 - `/delete_restaurant`：用餐廳 ID 刪除錯誤餐廳，必須把 `confirm` 設成 `True` 才會刪除。
 - `/backup_db`：把目前 VM 上的餐廳資料庫備份成 SQLite 檔案傳回 Discord。
 - `/enrich_prices`：從既有食べログ網址慢慢補抓午餐/晚餐價格。
+- `/enrich_hours`：從既有食べログ網址慢慢補抓營業時間。
 - `/find_restaurant 拉麵`：用關鍵字查詢，出現餐廳選單。
 - 選餐廳後會顯示食べログ網址、Google Maps 連結、當時 Discord 的評論。
 - `/export_map_csv`：匯出 CSV，可匯入 Google My Maps 或 Google Sheets。
@@ -37,6 +38,8 @@ GOOGLE_SHEETS_WORKSHEET=restaurants
 GOOGLE_MY_MAPS_URL=你的 Google My Maps 分享網址
 ADMIN_PASSWORD=管理後台密碼
 PUBLIC_WEB_URL=公開餐廳網頁網址
+PUBLIC_MAP_URL=公開地圖網頁網址
+AUTO_SAVE_RESTAURANT_LINKS=true
 ```
 
 3. 安裝套件：
@@ -103,6 +106,22 @@ bot 會把目前資料庫備份成 `.sqlite3` 檔案傳給執行指令的人。�
 ```
 
 建議一次補 5 間左右，避免一次對食べログ發太多請求。之後保存新餐廳時，如果有食べログ網址，bot 也會嘗試自動抓價格。
+
+## 補抓食べログ營業時間
+
+如果餐廳已經有食べログ網址，可以慢慢把營業時間補進 DB：
+
+```text
+/enrich_hours limit:5
+```
+
+也可以用一般訊息：
+
+```text
+@bot 補營業時間 5
+```
+
+建議一次補 5 間左右。食べログ頁面可能改版或擋請求，所以抓不到時不會覆蓋既有資料，可以之後再試或從管理後台手動填入。
 
 ## Google Maps 反查食べログ
 

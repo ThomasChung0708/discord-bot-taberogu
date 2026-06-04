@@ -57,6 +57,8 @@ class ExtractionResult:
     dinner_budget_min: int | None = None
     dinner_budget_max: int | None = None
     price_updated_at: str | None = None
+    business_hours_text: str | None = None
+    business_hours_updated_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -70,6 +72,14 @@ class PriceInfo:
     dinner_budget_min: int | None = None
     dinner_budget_max: int | None = None
     price_updated_at: str | None = None
+
+
+@dataclass(frozen=True)
+class BusinessHoursInfo:
+    """食べログ頁面抓到的營業時間資訊。"""
+
+    business_hours_text: str | None = None
+    business_hours_updated_at: str | None = None
 
 
 def find_tabelog_url(text: str) -> str | None:
@@ -191,6 +201,97 @@ def fetch_tabelog_price_info(url: str | None) -> PriceInfo:
         dinner_budget_max=dinner_max,
         price_updated_at=updated_at,
     )
+
+
+def fetch_tabelog_business_hours(url: str | None) -> BusinessHoursInfo:
+    """從食べログ店家頁抓營業時間。
+
+    食べログ頁面結構不保證固定，所以這裡先找表格裡的「営業時間」，
+    找不到再用頁面文字附近的行數當備援。失敗時回傳空值，不影響保存餐廳。
+    """
+
+    if not url:
+        return BusinessHoursInfo()
+    try:
+        resp = requests.get(
+            url,
+            timeout=6,
+            headers={
+                "User-Agent": "Mozilla/5.0 restaurant-memory-bot/0.1",
+                "Accept-Language": "ja,en-US;q=0.8,en;q=0.6",
+            },
+        )
+        resp.raise_for_status()
+    except requests.RequestException:
+        return BusinessHoursInfo()
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    hours_text = find_business_hours_in_tables(soup) or find_business_hours_in_text(
+        soup.get_text("\n", strip=True)
+    )
+    if not hours_text:
+        return BusinessHoursInfo()
+    return BusinessHoursInfo(
+        business_hours_text=normalize_business_hours_text(hours_text),
+        business_hours_updated_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    )
+
+
+def find_business_hours_in_tables(soup: BeautifulSoup) -> str | None:
+    """從食べログ常見的店鋪資訊表格抓「営業時間」欄位。"""
+
+    for row in soup.find_all("tr"):
+        header = row.find(["th", "dt"])
+        if not header:
+            continue
+        header_text = header.get_text(" ", strip=True)
+        if "営業時間" not in header_text:
+            continue
+        cells = row.find_all(["td", "dd"])
+        if not cells:
+            continue
+        value = cells[0].get_text("\n", strip=True)
+        if value:
+            return value
+
+    for label in soup.find_all(string=re.compile("営業時間")):
+        parent = label.parent
+        if not parent:
+            continue
+        row = parent.find_parent("tr")
+        if row:
+            cells = row.find_all(["td", "dd"])
+            if cells:
+                value = cells[0].get_text("\n", strip=True)
+                if value:
+                    return value
+    return None
+
+
+def find_business_hours_in_text(text: str) -> str | None:
+    """用頁面文字備援搜尋營業時間。"""
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    stop_words = {"定休日", "予算", "席", "個室", "貸切", "駐車場", "メニュー", "口コミ"}
+    for index, line in enumerate(lines):
+        if "営業時間" not in line:
+            continue
+        collected: list[str] = []
+        for candidate in lines[index + 1 : index + 10]:
+            if any(word in candidate for word in stop_words):
+                break
+            collected.append(candidate)
+        if collected:
+            return "\n".join(collected)
+    return None
+
+
+def normalize_business_hours_text(text: str) -> str:
+    """整理營業時間文字，避免把整頁內容塞進 DB。"""
+
+    lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+    cleaned = [line for line in lines if line and line not in {"営業時間"}]
+    return "\n".join(cleaned)[:800]
 
 
 PRICE_RE = re.compile(r"￥\s*[\d,]+\s*未満|￥\s*[\d,]+(?:\s*[～〜-]\s*￥?\s*[\d,]+)?")
@@ -511,6 +612,7 @@ def extract_restaurant(
         tabelog_url = find_tabelog_url_by_search(name, area)
     google_url = google_maps_url or (google_maps_search_url(name, area) if name else None)
     price_info = fetch_tabelog_price_info(tabelog_url)
+    hours_info = fetch_tabelog_business_hours(tabelog_url)
     image_url = attachment_image_url or fetch_tabelog_image_url(tabelog_url)
 
     return ExtractionResult(
@@ -530,6 +632,8 @@ def extract_restaurant(
         dinner_budget_min=price_info.dinner_budget_min,
         dinner_budget_max=price_info.dinner_budget_max,
         price_updated_at=price_info.price_updated_at,
+        business_hours_text=hours_info.business_hours_text,
+        business_hours_updated_at=hours_info.business_hours_updated_at,
     )
 
 

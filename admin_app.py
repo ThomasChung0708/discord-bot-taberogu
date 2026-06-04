@@ -29,7 +29,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from db import Restaurant, RestaurantDB
-from extractor import fetch_tabelog_price_info
+from extractor import fetch_tabelog_business_hours, fetch_tabelog_price_info
 from sheets_sync import read_restaurants_from_sheet, sync_restaurants_to_sheet
 
 
@@ -94,6 +94,7 @@ class RestaurantPayload(BaseModel):
     dinner_budget_text: str | None = None
     dinner_budget_min: int | None = None
     dinner_budget_max: int | None = None
+    business_hours_text: str | None = None
 
 
 class EnrichPricesPayload(BaseModel):
@@ -147,6 +148,8 @@ def restaurant_to_dict(restaurant: Restaurant) -> dict:
         "dinner_budget_min": restaurant.dinner_budget_min,
         "dinner_budget_max": restaurant.dinner_budget_max,
         "price_updated_at": restaurant.price_updated_at,
+        "business_hours_text": restaurant.business_hours_text,
+        "business_hours_updated_at": restaurant.business_hours_updated_at,
     }
 
 
@@ -269,6 +272,8 @@ def update_restaurant(
         dinner_budget_text=payload.dinner_budget_text,
         dinner_budget_min=payload.dinner_budget_min,
         dinner_budget_max=payload.dinner_budget_max,
+        business_hours_text=payload.business_hours_text,
+        business_hours_updated_at="manual" if payload.business_hours_text else None,
         price_updated_at="manual",
     )
     if not restaurant:
@@ -390,6 +395,8 @@ def import_sheet(_: None = Depends(require_admin)) -> dict:
             keywords=keywords or [name, category],
             lunch_budget_text=row.get("lunch_budget", "").strip() or None,
             dinner_budget_text=row.get("dinner_budget", "").strip() or None,
+            business_hours_text=row.get("business_hours", "").strip() or None,
+            business_hours_updated_at="google-sheet" if row.get("business_hours", "").strip() else None,
         )
         imported += 1
     return {"ok": True, "imported": imported, "skipped": skipped}
@@ -429,6 +436,36 @@ def enrich_prices(payload: EnrichPricesPayload, _: None = Depends(require_admin)
             f"ID {restaurant.id}: {restaurant.name} "
             f"午餐 {price.lunch_budget_text or '-'} / 晚餐 {price.dinner_budget_text or '-'}"
         )
+
+    return {
+        "ok": True,
+        "checked": len(restaurants),
+        "updated": len(updated),
+        "not_found": len(not_found),
+        "updated_items": updated[:10],
+        "not_found_items": not_found[:10],
+    }
+
+
+@app.post("/api/enrich-hours")
+def enrich_hours(payload: EnrichPricesPayload, _: None = Depends(require_admin)) -> dict:
+    """Fetch missing business hours from saved Tabelog URLs."""
+
+    restaurants = db.restaurants_missing_business_hours(limit=payload.limit)
+    updated: list[str] = []
+    not_found: list[str] = []
+    for restaurant in restaurants:
+        hours = fetch_tabelog_business_hours(restaurant.tabelog_url)
+        if not hours.business_hours_updated_at:
+            not_found.append(restaurant.name)
+            continue
+        db.update_business_hours(
+            restaurant_id=restaurant.id,
+            business_hours_text=hours.business_hours_text,
+            business_hours_updated_at=hours.business_hours_updated_at,
+        )
+        first_line = (hours.business_hours_text or "").splitlines()[0] if hours.business_hours_text else "-"
+        updated.append(f"ID {restaurant.id}: {restaurant.name} {first_line}")
 
     return {
         "ok": True,
@@ -894,7 +931,8 @@ PUBLIC_HTML = r"""
         summary: (count) => `目前顯示 ${count} 間餐廳`,
         lunch: "午餐",
         dinner: "晚餐",
-        recommendedBy: "推薦者"
+        recommendedBy: "推薦者",
+        businessHours: "營業時間"
       },
       ja: {
         title: "共有グルメリスト",
@@ -909,7 +947,8 @@ PUBLIC_HTML = r"""
         summary: (count) => `${count} 件のレストランを表示中`,
         lunch: "ランチ",
         dinner: "ディナー",
-        recommendedBy: "推薦者"
+        recommendedBy: "推薦者",
+        businessHours: "営業時間"
       }
     };
     const savedLanguage = localStorage.getItem("tabelogLanguage");
@@ -987,6 +1026,7 @@ PUBLIC_HTML = r"""
           <div class="meta">ID ${restaurant.id} / ${escapeHtml(restaurant.category)} ${escapeHtml(restaurant.area || "")}</div>
           ${restaurant.recommended_by ? `<div class="meta">${t("recommendedBy")}：${escapeHtml(restaurant.recommended_by)}</div>` : ""}
           <div class="meta">${priceText(restaurant)}</div>
+          ${restaurant.business_hours_text ? `<div class="meta">${t("businessHours")}：${escapeHtml(shortText(restaurant.business_hours_text, 80))}</div>` : ""}
           <div class="tags">${tagHtml(restaurant.tags || restaurant.keywords || [])}</div>
           <div class="comments">${escapeHtml(shortText(displayCommentText(restaurant)))}</div>
           <div class="links">
@@ -998,8 +1038,8 @@ PUBLIC_HTML = r"""
       });
     }
 
-    function shortText(value) {
-      return value.length > 120 ? `${value.slice(0, 120)}...` : value;
+    function shortText(value, limit = 120) {
+      return value.length > limit ? `${value.slice(0, limit)}...` : value;
     }
 
     function displayCommentText(restaurant) {
@@ -1625,6 +1665,9 @@ ADMIN_HTML = r"""
           <label><span data-i18n="dinnerMax">晚餐最高</span>
             <input id="dinnerMax" type="number" min="0" step="1">
           </label>
+          <label class="full"><span data-i18n="businessHours">營業時間</span>
+            <textarea id="businessHours"></textarea>
+          </label>
           <label class="full">食べログ URL
             <input id="tabelogUrl">
           </label>
@@ -1669,6 +1712,7 @@ ADMIN_HTML = r"""
         createBackup: "立即備份 DB",
         cleanupTaxonomy: "整理地區/分類",
         enrichPrices: "補抓價格",
+        enrichHours: "補抓營業時間",
         adminPasswordTitle: "管理密碼",
         adminPasswordHelp: "編輯、刪除、匯入與同步需要管理密碼。",
         adminPasswordPlaceholder: "輸入 ADMIN_PASSWORD",
@@ -1692,6 +1736,7 @@ ADMIN_HTML = r"""
         lunchMax: "午餐最高",
         dinnerMin: "晚餐最低",
         dinnerMax: "晚餐最高",
+        businessHours: "營業時間",
         imageUrl: "圖片 URL",
         uploadImage: "上傳圖片",
         uploadImageButton: "上傳圖片",
@@ -1720,6 +1765,10 @@ ADMIN_HTML = r"""
         enriching: "補抓中...",
         enrichFailed: "補抓價格失敗",
         enrichDone: (updated, checked) => `已檢查 ${checked} 筆，更新 ${updated} 筆價格。`,
+        enrichHoursConfirm: "要從食べログ慢慢補抓最多 5 筆缺少的營業時間嗎？",
+        enrichingHours: "補抓中...",
+        enrichHoursFailed: "補抓營業時間失敗",
+        enrichHoursDone: (updated, checked) => `已檢查 ${checked} 筆，更新 ${updated} 筆營業時間。`,
         backupConfirm: "要立即建立一份 SQLite 備份嗎？",
         backingUp: "備份中...",
         backupFailed: "備份失敗",
@@ -1747,6 +1796,7 @@ ADMIN_HTML = r"""
         createBackup: "DB を今すぐバックアップ",
         cleanupTaxonomy: "エリア/分類を整理",
         enrichPrices: "価格を補完",
+        enrichHours: "営業時間を補完",
         adminPasswordTitle: "管理パスワード",
         adminPasswordHelp: "編集・削除・取り込み・同期には管理パスワードが必要です。",
         adminPasswordPlaceholder: "ADMIN_PASSWORD を入力",
@@ -1770,6 +1820,7 @@ ADMIN_HTML = r"""
         lunchMax: "ランチ最高額",
         dinnerMin: "ディナー最低額",
         dinnerMax: "ディナー最高額",
+        businessHours: "営業時間",
         imageUrl: "画像 URL",
         uploadImage: "画像をアップロード",
         uploadImageButton: "画像をアップロード",
@@ -1798,6 +1849,10 @@ ADMIN_HTML = r"""
         enriching: "補完中...",
         enrichFailed: "価格補完に失敗しました",
         enrichDone: (updated, checked) => `${checked} 件を確認し、${updated} 件の価格を更新しました。`,
+        enrichHoursConfirm: "食べログから営業時間未入力の店を最大 5 件補完しますか？",
+        enrichingHours: "補完中...",
+        enrichHoursFailed: "営業時間の補完に失敗しました",
+        enrichHoursDone: (updated, checked) => `${checked} 件を確認し、${updated} 件の営業時間を更新しました。`,
         backupConfirm: "SQLite バックアップを今すぐ作成しますか？",
         backingUp: "バックアップ中...",
         backupFailed: "バックアップに失敗しました",
@@ -1847,6 +1902,7 @@ ADMIN_HTML = r"""
       backupButton.textContent = t("createBackup");
       cleanupButton.textContent = t("cleanupTaxonomy");
       enrichButton.textContent = t("enrichPrices");
+      enrichHoursButton.textContent = t("enrichHours");
       renderFilters();
       renderList();
       if (!$("editorForm").hidden && state.selectedId) {
@@ -1875,6 +1931,11 @@ ADMIN_HTML = r"""
     enrichButton.type = "button";
     enrichButton.textContent = t("enrichPrices");
     cleanupButton.insertAdjacentElement("beforebegin", enrichButton);
+    const enrichHoursButton = document.createElement("button");
+    enrichHoursButton.id = "enrichHours";
+    enrichHoursButton.type = "button";
+    enrichHoursButton.textContent = t("enrichHours");
+    enrichButton.insertAdjacentElement("beforebegin", enrichHoursButton);
     const commentItems = document.createElement("div");
     commentItems.id = "commentItems";
     commentItems.className = "status";
@@ -2013,6 +2074,7 @@ ADMIN_HTML = r"""
       $("lunchMax").value = restaurant.lunch_budget_max || "";
       $("dinnerMin").value = restaurant.dinner_budget_min || "";
       $("dinnerMax").value = restaurant.dinner_budget_max || "";
+      $("businessHours").value = restaurant.business_hours_text || "";
       $("tabelogUrl").value = restaurant.tabelog_url || "";
       $("googleMapsUrl").value = restaurant.google_maps_url || "";
       $("imageUrl").value = restaurant.image_url || "";
@@ -2061,7 +2123,8 @@ ADMIN_HTML = r"""
         lunch_budget_max: numberOrNull($("lunchMax").value),
         dinner_budget_text: $("dinnerBudget").value.trim() || null,
         dinner_budget_min: numberOrNull($("dinnerMin").value),
-        dinner_budget_max: numberOrNull($("dinnerMax").value)
+        dinner_budget_max: numberOrNull($("dinnerMax").value),
+        business_hours_text: $("businessHours").value.trim() || null
       };
     }
 
@@ -2197,6 +2260,28 @@ ADMIN_HTML = r"""
       } finally {
         enrichButton.disabled = false;
         enrichButton.textContent = t("enrichPrices");
+      }
+    });
+
+    enrichHoursButton.addEventListener("click", async () => {
+      if (!confirm(t("enrichHoursConfirm"))) return;
+      enrichHoursButton.disabled = true;
+      enrichHoursButton.textContent = t("enrichingHours");
+      try {
+        const response = await fetch("/api/enrich-hours", {
+          method: "POST",
+          headers: adminHeaders(),
+          body: JSON.stringify({limit: 5})
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || t("enrichHoursFailed"));
+        alert(t("enrichHoursDone", data.updated, data.checked));
+        await loadRestaurants();
+      } catch (error) {
+        alert(error.message);
+      } finally {
+        enrichHoursButton.disabled = false;
+        enrichHoursButton.textContent = t("enrichHours");
       }
     });
 
