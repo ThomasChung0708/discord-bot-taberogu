@@ -959,6 +959,7 @@ def recommendation_candidates(
     intent_tokens = recommendation_tokens(" ".join(intent_search_terms(intent)))
     memory_tokens = recommendation_tokens(memory_context)[:25] if memory_context else []
     area_terms = list_from_intent(intent, "area_terms")
+    food_terms = list_from_intent(intent, "food_terms")
     search_pool = filter_restaurants_by_area(restaurants, area_terms)
     include_area_score = not area_terms
     if area_terms:
@@ -966,6 +967,8 @@ def recommendation_candidates(
         intent_tokens = remove_area_tokens(intent_tokens, area_terms)
     for restaurant in search_pool:
         score = score_restaurant_for_request(restaurant, tokens, budget, include_area=include_area_score)
+        if area_terms and not food_terms:
+            score += 1
         if intent_tokens:
             score += score_restaurant_for_request(
                 restaurant,
@@ -1080,9 +1083,17 @@ def recommendation_tokens(request: str) -> list[str]:
         "幫我",
         "有沒有",
         "有没有",
+        "有",
         "可以",
         "嗎",
         "么",
+        "今天",
+        "明天",
+        "傍晚",
+        "晚上",
+        "晚餐",
+        "會",
+        "去",
         "現在",
         "現在人",
         "人在",
@@ -1108,6 +1119,8 @@ def recommendation_tokens(request: str) -> list[str]:
             "推薦",
             "一下",
             "會去",
+            "的餐廳",
+            "餐廳嗎",
         ]
     )
     normalized_text = normalize_search_text(text)
@@ -1150,7 +1163,7 @@ def infer_recommendation_intent(request: str, memory_context: str = "") -> dict[
                     "content": (
                         "你是餐廳推薦 bot 的查詢理解器。請先理解使用者真正想吃/想做什麼，"
                         "再產生適合拿去 SQLite 餐廳 DB 搜尋的詞。"
-                        "DB 欄位包含店名、地區、分類、keywords、tags、comments、午餐/晚餐價格。"
+                        "DB 欄位包含店名、地區、分類、keywords、tags、comments、午餐/晚餐價格、營業時間。"
                         "請回 JSON object，格式："
                         "{\"summary\":\"使用者意圖一句話\","
                         "\"area_terms\":[\"地區詞\"],"
@@ -1161,6 +1174,8 @@ def infer_recommendation_intent(request: str, memory_context: str = "") -> dict[
                         "\"expanded_terms\":[\"可搜尋同義詞\"]}。"
                         "例：'人在橫濱 想要喝到吐' => area_terms 橫濱, food/scene 包含 居酒屋、酒、飲み、バル。"
                         "例：'新宿 燒烤' => area_terms 新宿, food_terms 包含 燒肉、焼肉、焼鳥、串燒。"
+                        "例：'今天傍晚會去秋葉原 有推薦的餐廳嗎' => area_terms 秋葉原, scene_terms 晚餐、傍晚。"
+                        "area_terms 只能放地名/站名，不可以放完整句子或「的餐廳嗎」這種語尾。"
                         "只能產生搜尋詞，不要推薦不存在的店。"
                     ),
                 },
@@ -1183,10 +1198,10 @@ def infer_recommendation_intent(request: str, memory_context: str = "") -> dict[
             timeout=20,
         )
         data = json.loads(response.choices[0].message.content or "{}")
-        return merge_recommendation_intents(fallback, data)
+        return sanitize_recommendation_intent(merge_recommendation_intents(fallback, data))
     except Exception as exc:
         print(f"recommendation intent inference failed: {exc}")
-        return fallback
+        return sanitize_recommendation_intent(fallback)
 
 
 def recommendation_known_values(limit: int = 120) -> dict[str, list[str]]:
@@ -1198,24 +1213,53 @@ def recommendation_known_values(limit: int = 120) -> dict[str, list[str]]:
     seen_area: set[str] = set()
     seen_category: set[str] = set()
     seen_tag: set[str] = set()
-    for restaurant in db.all():
+    restaurants = sorted(db.all(), key=lambda restaurant: restaurant.id)
+    for restaurant in restaurants:
         if restaurant.area and restaurant.area not in seen_area:
             seen_area.add(restaurant.area)
             areas.append(restaurant.area)
         if restaurant.category and restaurant.category not in seen_category:
             seen_category.add(restaurant.category)
             categories.append(restaurant.category)
+    for restaurant in restaurants:
         for tag in [*restaurant.tags, *restaurant.keywords]:
             if tag and tag not in seen_tag:
                 seen_tag.add(tag)
                 tags.append(tag)
-        if len(areas) + len(categories) + len(tags) >= limit:
+        if len(tags) >= limit:
             break
     return {
-        "areas": areas[:40],
-        "categories": categories[:30],
-        "tags": tags[:50],
+        "areas": areas[:80],
+        "categories": categories[:50],
+        "tags": tags[:limit],
     }
+
+
+def sanitize_recommendation_intent(intent: dict[str, object]) -> dict[str, object]:
+    """Remove AI area hallucinations while keeping known or canonical area names."""
+
+    cleaned = dict(intent)
+    known_areas = recommendation_known_values()["areas"]
+    normalized_known = {
+        normalize_search_text(value): value
+        for value in known_areas
+        if normalize_search_text(value)
+    }
+    area_terms: list[str] = []
+    for raw_area in list_from_intent(intent, "area_terms"):
+        for value in [raw_area, normalize_area(raw_area) or ""]:
+            normalized = normalize_search_text(value)
+            if not normalized:
+                continue
+            if normalized in normalized_known:
+                area_terms.append(normalized_known[normalized])
+                continue
+            for known_normalized, known_label in normalized_known.items():
+                if normalized in known_normalized or known_normalized in normalized:
+                    area_terms.append(known_label)
+                    break
+    cleaned["area_terms"] = unique_texts(area_terms)
+    return cleaned
 
 
 def rule_based_recommendation_intent(request: str) -> dict[str, object]:
@@ -1252,8 +1296,8 @@ def rule_based_recommendation_intent(request: str) -> dict[str, object]:
     if any(word in request for word in ["燒烤", "烧烤", "烤肉", "串燒", "串烧"]):
         food_terms.extend(["燒肉", "焼肉", "焼鳥", "串燒", "串焼き", "ホルモン"])
         expanded_terms.extend(["燒肉", "焼肉", "焼鳥", "串"])
-    if any(word in request for word in ["下班", "仕事帰り", "晚餐", "晚上"]):
-        scene_terms.extend(["晚餐", "下班", "喝酒"])
+    if any(word in request for word in ["下班", "仕事帰り", "晚餐", "晚上", "傍晚", "夕方", "夜"]):
+        scene_terms.extend(["晚餐", "傍晚", "下班", "營業中"])
     if any(word in request for word in ["便宜", "省錢", "安い", "便宜一點"]):
         scene_terms.extend(["便宜", "平價"])
     if any(word in request for word in ["一個人", "自己", "ひとり", "單人"]):
@@ -1416,6 +1460,7 @@ def score_restaurant_for_request(
         "keywords": normalize_search_text(" ".join(restaurant.keywords)),
         "tags": normalize_search_text(" ".join(restaurant.tags)),
         "comments": normalize_search_text(restaurant.comments or ""),
+        "business_hours": normalize_search_text(restaurant.business_hours_text or ""),
     }
     score = 0
     for token in tokens:
@@ -1431,6 +1476,13 @@ def score_restaurant_for_request(
             score += 3
         if token in fields["comments"]:
             score += 2
+        if token in fields["business_hours"]:
+            score += 2
+    if any(token in {"晚餐", "晚上", "傍晚", "夜", "夕方", "營業中", "营业中"} for token in tokens):
+        if restaurant.business_hours_text:
+            score += 1
+        if restaurant.dinner_budget_text:
+            score += 1
     if budget and restaurant_matches_budget(restaurant, budget):
         score += 2
     return score
@@ -1471,6 +1523,7 @@ def rank_recommendations_with_ai(
             "comments": (restaurant.comments or "")[:500],
             "lunch_budget": restaurant.lunch_budget_text,
             "dinner_budget": restaurant.dinner_budget_text,
+            "business_hours": restaurant.business_hours_text,
         }
         for restaurant in candidates
     ]
