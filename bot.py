@@ -803,13 +803,11 @@ def parse_recommendation_request(keyword: str) -> str | None:
                 if rest:
                     return rest
         for trigger in recommendation_inline_triggers():
-            index = normalized.find(normalize_search_text(trigger))
-            if index <= 0:
+            if normalize_search_text(trigger) not in normalized:
                 continue
-            rest = text[index + len(trigger) :].strip()
-            rest = strip_recommendation_leading_words(rest)
-            if rest:
-                return rest
+            request = cleanup_inline_recommendation_text(text)
+            if request:
+                return request
     return None
 
 
@@ -861,6 +859,34 @@ def strip_recommendation_leading_words(text: str) -> str:
                 result = result[len(word) :].strip()
                 changed = True
     return result
+
+
+def cleanup_inline_recommendation_text(text: str) -> str:
+    """Keep useful context from casual recommendation sentences.
+
+    Example:
+    - 等等要去新宿 有推薦的餐廳嗎 -> 等等要去新宿
+    - 新宿 拉麵推薦 -> 新宿 拉麵
+    """
+
+    result = text.strip()
+    phrases = [
+        "有推薦的餐廳嗎",
+        "有推薦的餐廳",
+        "有推薦嗎",
+        "有沒有推薦",
+        "推薦的餐廳嗎",
+        "推薦的餐廳",
+        "推薦餐廳",
+        "推薦一下",
+        "推薦",
+        "recommend",
+    ]
+    for phrase in phrases:
+        result = re.sub(re.escape(phrase), " ", result, flags=re.I)
+    result = re.sub(r"[？?。!！]+", " ", result)
+    result = re.sub(r"\s+", " ", result).strip()
+    return strip_recommendation_leading_words(result)
 
 
 async def send_recommendations(target: discord.Message, request: str) -> None:
