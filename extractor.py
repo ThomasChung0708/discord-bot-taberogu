@@ -124,6 +124,30 @@ def fetch_tabelog_title(url: str | None) -> str | None:
     return None
 
 
+def parse_tabelog_title(title: str | None) -> tuple[str | None, str | None, str | None]:
+    """Return restaurant name, area, and category from a Tabelog page title."""
+
+    if not title:
+        return None, None, None
+
+    cleaned = re.sub(r"\s*-\s*食べログ\s*$", "", title).strip()
+    match = re.match(r"^(?P<name>.+?)\s*[（(](?P<inside>[^）)]+)[）)]", cleaned)
+    if not match:
+        return cleaned or None, None, None
+
+    name = match.group("name").strip() or None
+    inside = match.group("inside").strip()
+    area = None
+    category = None
+    if "/" in inside:
+        area_part, category_part = inside.split("/", 1)
+        area = area_part.strip() or None
+        category = category_part.split("/", 1)[0].strip() or None
+    else:
+        area = inside or None
+    return name, area, category
+
+
 def fetch_tabelog_image_url(url: str | None) -> str | None:
     """Best-effort fetch of the restaurant preview image from Tabelog."""
 
@@ -568,6 +592,7 @@ def extract_restaurant(
     google_maps_url = find_google_maps_url(combined)
     google_maps_place_name = place_name_from_google_maps_url(google_maps_url)
     tabelog_title = fetch_tabelog_title(tabelog_url)
+    tabelog_title_name, tabelog_title_area, tabelog_title_category = parse_tabelog_title(tabelog_title)
 
     prompt = {
         "messages": plain_messages,
@@ -605,9 +630,13 @@ def extract_restaurant(
     data = json.loads(raw)
     name = _clean_optional(data.get("name"))
     if not name:
-        name = google_maps_place_name
+        name = google_maps_place_name or tabelog_title_name
     area = _clean_optional(data.get("area"))
+    if not area:
+        area = tabelog_title_area
     category = str(data.get("category") or "未分類").strip()
+    if category == "未分類" and tabelog_title_category:
+        category = tabelog_title_category
     if not tabelog_url:
         tabelog_url = find_tabelog_url_by_search(name, area)
     google_url = google_maps_url or (google_maps_search_url(name, area) if name else None)
