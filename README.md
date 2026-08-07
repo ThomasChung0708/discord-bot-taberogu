@@ -39,7 +39,11 @@ ADMIN_PASSWORD=管理後台密碼
 PUBLIC_WEB_URL=公開餐廳網頁網址
 PUBLIC_MAP_URL=公開地圖網頁網址
 AUTO_SAVE_RESTAURANT_LINKS=true
+ALLOWED_TEXT_CHANNEL_NAMES=食べログ
+ALLOWED_TEXT_CHANNEL_IDS=
 ```
+
+`ALLOWED_TEXT_CHANNEL_NAMES` 會限制 bot 只在指定文字頻道讀取一般訊息、記憶聊天、自動保存餐廳，以及右鍵保存餐廳/評論。預設只在 `#食べログ` 生效。若想用頻道 ID 控制，可以填 `ALLOWED_TEXT_CHANNEL_IDS`，多個值用逗號分隔。
 
 3. 安裝套件：
 

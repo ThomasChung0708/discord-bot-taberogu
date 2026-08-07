@@ -70,6 +70,16 @@ AUTO_SAVE_RESTAURANT_LINKS = os.getenv("AUTO_SAVE_RESTAURANT_LINKS", "true").str
     "no",
     "off",
 }
+ALLOWED_TEXT_CHANNEL_NAMES = {
+    name.strip()
+    for name in os.getenv("ALLOWED_TEXT_CHANNEL_NAMES", "食べログ").split(",")
+    if name.strip()
+}
+ALLOWED_TEXT_CHANNEL_IDS = {
+    int(channel_id.strip())
+    for channel_id in os.getenv("ALLOWED_TEXT_CHANNEL_IDS", "").split(",")
+    if channel_id.strip().isdigit()
+}
 CHAT_MEMORY_ENABLED = os.getenv("CHAT_MEMORY_ENABLED", "true").strip().lower() not in {
     "0",
     "false",
@@ -334,6 +344,8 @@ async def on_message(message: discord.Message) -> None:
 
     if message.author.bot or not client.user:
         return
+    if not is_allowed_text_channel(message):
+        return
     if AUTO_SAVE_RESTAURANT_LINKS and has_restaurant_link(message.content):
         await remember_chat_message(message)
         await auto_save_restaurant_from_message(message)
@@ -480,6 +492,44 @@ def has_restaurant_link(text: str) -> bool:
     return bool(find_tabelog_url(text) or find_google_maps_url(text))
 
 
+def is_allowed_channel_object(channel: object) -> bool:
+    """Return whether bot storage/message behavior is allowed in this channel."""
+
+    channel_id = getattr(channel, "id", None)
+    if ALLOWED_TEXT_CHANNEL_IDS:
+        return bool(channel_id and int(channel_id) in ALLOWED_TEXT_CHANNEL_IDS)
+    if not ALLOWED_TEXT_CHANNEL_NAMES:
+        return True
+    channel_name = getattr(channel, "name", "")
+    return channel_name in ALLOWED_TEXT_CHANNEL_NAMES
+
+
+def is_allowed_text_channel(message: discord.Message) -> bool:
+    """Limit passive bot behavior to configured text channels."""
+
+    return is_allowed_channel_object(message.channel)
+
+
+def is_allowed_interaction_channel(interaction: discord.Interaction) -> bool:
+    """Limit slash/context menu storage behavior to configured text channels."""
+
+    return is_allowed_channel_object(interaction.channel)
+
+
+async def reject_disallowed_interaction_channel(interaction: discord.Interaction) -> bool:
+    """Reply to commands used outside allowed channels and return True when blocked."""
+
+    if is_allowed_interaction_channel(interaction):
+        return False
+    allowed = "、".join(f"#{name}" for name in sorted(ALLOWED_TEXT_CHANNEL_NAMES)) or "指定頻道"
+    message = f"這個功能只在 {allowed} 可以使用。"
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await interaction.response.send_message(message, ephemeral=True)
+    return True
+
+
 async def auto_save_restaurant_from_message(message: discord.Message) -> None:
     """Automatically store restaurants when someone posts Tabelog or Google Maps."""
 
@@ -547,6 +597,9 @@ async def save_restaurant_from_message(
 ) -> None:
     """右鍵訊息選單：從指定訊息抽取餐廳資訊並保存。"""
 
+    if await reject_disallowed_interaction_channel(interaction):
+        return
+
     await interaction.response.defer(thinking=True, ephemeral=True)
 
     snippets = await snippets_for_target_message(message)
@@ -564,6 +617,9 @@ async def save_comment_from_message(
     message: discord.Message,
 ) -> None:
     """右鍵訊息選單：把指定訊息當作評論追加到某間餐廳。"""
+
+    if await reject_disallowed_interaction_channel(interaction):
+        return
 
     comment = format_comment_messages([message])
     if not comment:
@@ -1791,6 +1847,9 @@ async def add_comment(
     end_message: str,
 ) -> None:
     """用開始/結束訊息連結，把一段 Discord 訊息追加成評論。"""
+
+    if await reject_disallowed_interaction_channel(interaction):
+        return
 
     await interaction.response.defer(thinking=True, ephemeral=True)
 
