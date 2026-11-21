@@ -16,7 +16,7 @@
 - `/find_restaurant 拉麵`：用關鍵字查詢，出現餐廳選單。
 - 選餐廳後會顯示食べログ網址、Google Maps 連結、當時 Discord 的評論。
 - `/export_map_csv`：匯出 CSV，可匯入 Google My Maps 或 Google Sheets。
-- `/list_restaurant`：列出目前已儲存的餐廳與ID
+- `/list_restaurants`：列出目前已儲存的餐廳與 ID
 - 如果訊息裡是 Google Maps 連結，bot 會嘗試從網址解析店名，再反查食べログ店家網址。
 - `@bot 網頁` 或 `/web`：顯示公開餐廳網頁網址。
  
@@ -36,6 +36,7 @@ GOOGLE_SERVICE_ACCOUNT_FILE=service-account.json
 GOOGLE_SHEETS_WORKSHEET=restaurants
 GOOGLE_MY_MAPS_URL=你的 Google My Maps 分享網址
 ADMIN_PASSWORD=管理後台密碼
+SESSION_SECRET=自行產生並保存的隨機金鑰
 PUBLIC_WEB_URL=公開餐廳網頁網址
 PUBLIC_MAP_URL=公開地圖網頁網址
 AUTO_SAVE_RESTAURANT_LINKS=true
@@ -63,6 +64,8 @@ Discord Developer Portal 裡需要開：
 
 - Message Content Intent
 - bot 權限：Read Message History、Send Messages、Use Slash Commands、Embed Links
+
+`/edit_restaurant`、`/delete_restaurant`、`/sync_google_sheet`、`/backup_db` 僅能在伺服器內使用，執行者必須有「管理伺服器」（Manage Server / `manage_guild`）或「管理員」權限。除了 Discord 的預設指令權限外，程式也會在執行時檢查。餐廳指令仍受 `ALLOWED_TEXT_CHANNEL_NAMES` / `ALLOWED_TEXT_CHANNEL_IDS` 的頻道限制。
 
 ## 手動追加評論
 
@@ -161,6 +164,12 @@ GOOGLE_SHEETS_WORKSHEET=restaurants
 
 - `/`：公開只讀頁，朋友可以查看和搜尋餐廳，但不能修改資料。
 - `/admin`：管理後台，需要 `ADMIN_PASSWORD` 才能編輯、刪除、匯入、同步。
+
+公開清單與地圖不提供後台連結，管理者請自行開啟 `/admin`。未登入時只會收到登入頁，登入成功後才提供完整編輯介面。密碼不儲存在瀏覽器；後台改用有效期 12 小時的 HMAC-SHA256 簽章 cookie（`HttpOnly`、`SameSite=Strict`），並提供「登出」按鈕。HTTPS（含本機反向代理的 `X-Forwarded-Proto: https`）會設定 `Secure`。舊的 `X-Admin-Password` header 已不支援。
+
+正式環境請設定固定且保密的 `SESSION_SECRET`，例如執行 `python -c "import secrets; print(secrets.token_hex(32))"` 產生。未設定時會警告並為每個程序產生暫時金鑰，重啟後登入失效；多個 worker 必須共用同一個金鑰。登出會立即清除瀏覽器 cookie；輪替 `SESSION_SECRET` 或 `ADMIN_PASSWORD` 會使所有先前簽發的 session cookie 失效。
+
+登入失敗達 5 次會鎖定該 IP 15 分鐘；成功登入會清除該 IP 的失敗紀錄。只有來自本機反向代理的 `X-Forwarded-For` 才會用最後一個位址判定 IP。失敗紀錄保存在各程序記憶體；目前的單一 worker 部署適用，多 worker 部署應另設共用限流。API 文件路由 `/docs`、`/redoc`、`/openapi.json` 已停用。公開 API 不回傳 Discord 來源頻道、來源訊息或建立者欄位；推薦者仍公開顯示。
 
 可以做的事：
 

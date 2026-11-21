@@ -40,6 +40,7 @@ from extractor import (
     find_tabelog_url,
 )
 from sheets_sync import sync_restaurants_to_sheet
+from url_utils import sanitize_url, validate_url
 
 
 # 所有本機檔案路徑都以 bot.py 所在資料夾為基準。
@@ -563,15 +564,15 @@ async def auto_save_restaurant_from_message(message: discord.Message) -> None:
         name=result.name,
         category=result.category,
         area=result.area,
-        tabelog_url=result.tabelog_url,
-        google_maps_url=result.google_maps_url,
+        tabelog_url=sanitize_url(result.tabelog_url),
+        google_maps_url=sanitize_url(result.google_maps_url),
         comments=result.comments,
         keywords=result.keywords + [result.category],
         source_channel_id=message.channel.id,
         source_message_id=message.id,
         created_by="auto-save",
         recommended_by=getattr(message.author, "display_name", str(message.author)),
-        image_url=result.image_url,
+        image_url=sanitize_url(result.image_url, image=True),
         lunch_budget_text=result.lunch_budget_text,
         lunch_budget_min=result.lunch_budget_min,
         lunch_budget_max=result.lunch_budget_max,
@@ -707,15 +708,15 @@ async def save_extracted_restaurant(
         name=result.name,
         category=result.category,
         area=result.area,
-        tabelog_url=result.tabelog_url,
-        google_maps_url=result.google_maps_url,
+        tabelog_url=sanitize_url(result.tabelog_url),
+        google_maps_url=sanitize_url(result.google_maps_url),
         comments=result.comments,
         keywords=result.keywords + [result.category],
         source_channel_id=interaction.channel_id or 0,
         source_message_id=source_message_id,
         created_by=interaction.user.display_name,
         recommended_by=recommended_by,
-        image_url=result.image_url,
+        image_url=sanitize_url(result.image_url, image=True),
         lunch_budget_text=result.lunch_budget_text,
         lunch_budget_min=result.lunch_budget_min,
         lunch_budget_max=result.lunch_budget_max,
@@ -1723,8 +1724,25 @@ async def send_search_results(
     )
 
 
+async def reject_non_admin_interaction(interaction: discord.Interaction) -> bool:
+    permissions = getattr(interaction.user, "guild_permissions", None)
+    if interaction.guild is None or not permissions or not (
+        permissions.manage_guild or permissions.administrator
+    ):
+        await interaction.response.send_message(
+            "此指令僅限伺服器中具備「管理伺服器」或「管理員」權限的成員使用。",
+            ephemeral=True,
+        )
+        return True
+    return False
+
+
+@client.tree.command(name="list_restaurants", description="列出已儲存的餐廳與 ID")
 async def list_restaurants(interaction: discord.Interaction) -> None:
     """列出目前資料庫裡的餐廳與 ID，方便除錯與手動操作。"""
+
+    if await reject_disallowed_interaction_channel(interaction):
+        return
 
     restaurants = db.all()
     if not restaurants:
@@ -1744,6 +1762,9 @@ async def list_restaurants(interaction: discord.Interaction) -> None:
     )
 
 
+@client.tree.command(name="edit_restaurant", description="編輯餐廳資料")
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
 @app_commands.describe(
     restaurant_id="要編輯的餐廳 ID",
     name="新的店名，留空代表不修改",
@@ -1770,6 +1791,18 @@ async def edit_restaurant(
     Discord 的 slash command 不適合一次放很長的表單，
     所以這裡採用「只填想改的欄位」的方式。
     """
+
+    if await reject_non_admin_interaction(interaction):
+        return
+    if await reject_disallowed_interaction_channel(interaction):
+        return
+
+    try:
+        tabelog_url = validate_url(tabelog_url)
+        google_maps_url = validate_url(google_maps_url)
+    except ValueError as exc:
+        await interaction.response.send_message(str(exc), ephemeral=True)
+        return
 
     restaurant = db.get(restaurant_id)
     if not restaurant:
@@ -1799,6 +1832,9 @@ async def edit_restaurant(
     )
 
 
+@client.tree.command(name="delete_restaurant", description="刪除指定餐廳")
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
 @app_commands.describe(
     restaurant_id="要刪除的餐廳 ID",
     confirm="安全確認：請選 True 才會真的刪除",
@@ -1812,6 +1848,11 @@ async def delete_restaurant(
 
     為了避免手滑，必須把 confirm 設成 True 才會真的刪除。
     """
+
+    if await reject_non_admin_interaction(interaction):
+        return
+    if await reject_disallowed_interaction_channel(interaction):
+        return
 
     restaurant = db.get(restaurant_id)
     if not restaurant:
@@ -1835,6 +1876,7 @@ async def delete_restaurant(
     )
 
 
+@client.tree.command(name="add_comment", description="將指定訊息區間追加為餐廳評論")
 @app_commands.describe(
     restaurant="餐廳 ID 或關鍵字。若關鍵字找到多筆，請改用餐廳 ID",
     start_message="開始訊息的 ID 或訊息連結",
@@ -1900,8 +1942,12 @@ async def add_comment(
     )
 
 
+@client.tree.command(name="export_map_csv", description="匯出餐廳 CSV 供地圖使用")
 async def export_map_csv(interaction: discord.Interaction) -> None:
     """把餐廳資料匯出成 CSV，作為 My Maps 的手動備援方案。"""
+
+    if await reject_disallowed_interaction_channel(interaction):
+        return
 
     restaurants = db.all()
     if not restaurants:
@@ -1945,19 +1991,35 @@ async def export_map_csv(interaction: discord.Interaction) -> None:
     )
 
 
+@client.tree.command(name="sync_google_sheet", description="同步餐廳資料到 Google Sheet")
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
 async def sync_google_sheet(interaction: discord.Interaction) -> None:
     """slash command：同步 SQLite 餐廳資料到 Google Sheet。"""
+
+    if await reject_non_admin_interaction(interaction):
+        return
+    if await reject_disallowed_interaction_channel(interaction):
+        return
 
     await interaction.response.defer(thinking=True, ephemeral=True)
     await sync_google_sheet_to_discord(interaction)
 
 
+@client.tree.command(name="backup_db", description="下載餐廳資料庫備份")
+@app_commands.guild_only()
+@app_commands.default_permissions(manage_guild=True)
 async def backup_db(interaction: discord.Interaction) -> None:
     """把目前 SQLite 資料庫備份成檔案傳回 Discord。
 
     這個指令適合定期把 VM 上的主資料庫下載回本機保存。
     使用 SQLite backup API，而不是直接複製檔案，避免 bot 正在寫入時拿到不完整檔案。
     """
+
+    if await reject_non_admin_interaction(interaction):
+        return
+    if await reject_disallowed_interaction_channel(interaction):
+        return
 
     await interaction.response.defer(thinking=True, ephemeral=True)
     if not DB_PATH.exists():
@@ -2171,7 +2233,8 @@ def create_database_backup() -> Path:
     fd, temp_name = tempfile.mkstemp(prefix="restaurants_backup_", suffix=".sqlite3")
     os.close(fd)
     backup_path = Path(temp_name)
-    source = sqlite3.connect(DB_PATH)
+    source = sqlite3.connect(DB_PATH, timeout=15.0)
+    source.execute("PRAGMA busy_timeout = 15000")
     destination = sqlite3.connect(backup_path)
     try:
         source.backup(destination)

@@ -16,21 +16,30 @@ SQLite 資料庫。它的目標不是取代 Discord 操作，而是補上管理�
 """
 
 import os
+import hashlib
+import hmac
+import ipaddress
+import logging
+import math
+import secrets
 import sqlite3
+import threading
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from dotenv import load_dotenv
-from fastapi import Depends, Header, HTTPException, FastAPI, Request
+from fastapi import Depends, HTTPException, FastAPI, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from db import Restaurant, RestaurantDB
 from extractor import fetch_tabelog_business_hours, fetch_tabelog_price_info
 from sheets_sync import read_restaurants_from_sheet, sync_restaurants_to_sheet
+from url_utils import sanitize_url, validate_url
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -51,6 +60,16 @@ if GOOGLE_SERVICE_ACCOUNT_FILE and not GOOGLE_SERVICE_ACCOUNT_FILE.is_absolute()
 GOOGLE_SHEETS_WORKSHEET = os.getenv("GOOGLE_SHEETS_WORKSHEET", "restaurants").strip() or "restaurants"
 GOOGLE_MY_MAPS_URL = os.getenv("GOOGLE_MY_MAPS_URL", "").strip()
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "").strip()
+SESSION_SECRET = os.getenv("SESSION_SECRET", "").strip()
+if not SESSION_SECRET:
+    SESSION_SECRET = secrets.token_hex(32)
+    logging.getLogger(__name__).warning("未設定 SESSION_SECRET，使用暫時金鑰；重啟後管理登入將失效。")
+SESSION_COOKIE = "tabelog_admin_session"
+SESSION_TTL = 12 * 60 * 60
+LOGIN_WINDOW = 15 * 60
+LOGIN_MAX_FAILURES = 5
+login_attempts: dict[str, tuple[list[float], float]] = {}
+login_lock = threading.Lock()
 BACKUP_DIR_VALUE = os.getenv("BACKUP_DIR", "backups").strip() or "backups"
 BACKUP_DIR = Path(BACKUP_DIR_VALUE)
 if not BACKUP_DIR.is_absolute():
@@ -70,9 +89,17 @@ ALLOWED_IMAGE_TYPES = {
 }
 
 db = RestaurantDB(str(DB_PATH))
-app = FastAPI(title="Discord 食べログ Bot Admin")
+app = FastAPI(title="Discord 食べログ Bot Admin", docs_url=None, redoc_url=None, openapi_url=None)
 RESTAURANT_IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
+
+
+@app.middleware("http")
+async def uploads_nosniff(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/uploads/"):
+        response.headers["X-Content-Type-Options"] = "nosniff"
+    return response
 
 
 class RestaurantPayload(BaseModel):
@@ -96,6 +123,16 @@ class RestaurantPayload(BaseModel):
     dinner_budget_max: int | None = None
     business_hours_text: str | None = None
 
+    @field_validator("tabelog_url", "google_maps_url")
+    @classmethod
+    def validate_link(cls, value: str | None) -> str | None:
+        return validate_url(value)
+
+    @field_validator("image_url")
+    @classmethod
+    def validate_image(cls, value: str | None) -> str | None:
+        return validate_url(value, image=True)
+
 
 class EnrichPricesPayload(BaseModel):
     limit: int = Field(default=5, ge=1, le=20)
@@ -108,10 +145,10 @@ class CommentPayload(BaseModel):
     created_by: str = "Admin"
 
 
-def comment_to_dict(comment) -> dict:
+def comment_to_dict(comment, *, internal: bool = False) -> dict:
     """Convert a normalized comment row to JSON."""
 
-    return {
+    result = {
         "id": comment.id,
         "restaurant_id": comment.restaurant_id,
         "comment": comment.comment,
@@ -119,12 +156,13 @@ def comment_to_dict(comment) -> dict:
         "created_at": comment.created_at,
         "source_message_id": comment.source_message_id,
     }
+    return result if internal else public_fields(result)
 
 
-def restaurant_to_dict(restaurant: Restaurant) -> dict:
+def restaurant_to_dict(restaurant: Restaurant, *, internal: bool = False) -> dict:
     """把 dataclass 轉成 JSON-friendly dict。"""
 
-    return {
+    result = {
         "id": restaurant.id,
         "name": restaurant.name,
         "category": restaurant.category,
@@ -135,7 +173,7 @@ def restaurant_to_dict(restaurant: Restaurant) -> dict:
         "comments": restaurant.comments,
         "keywords": restaurant.keywords,
         "tags": restaurant.tags,
-        "comment_items": [comment_to_dict(comment) for comment in db.comments_for(restaurant.id)],
+        "comment_items": [comment_to_dict(comment, internal=internal) for comment in db.comments_for(restaurant.id)],
         "source_channel_id": restaurant.source_channel_id,
         "source_message_id": restaurant.source_message_id,
         "created_by": restaurant.created_by,
@@ -151,9 +189,36 @@ def restaurant_to_dict(restaurant: Restaurant) -> dict:
         "business_hours_text": restaurant.business_hours_text,
         "business_hours_updated_at": restaurant.business_hours_updated_at,
     }
+    return result if internal else public_fields(result)
 
 
-def require_admin(x_admin_password: str = Header(default="")) -> None:
+def public_fields(data: dict) -> dict:
+    return {key: value for key, value in data.items()
+            if key not in {"source_channel_id", "source_message_id", "created_by"}}
+
+
+def session_signature(payload: str) -> str:
+    # Changing the admin password also invalidates existing sessions.
+    key = hmac.new(SESSION_SECRET.encode(), ADMIN_PASSWORD.encode(), hashlib.sha256).digest()
+    return hmac.new(key, payload.encode(), hashlib.sha256).hexdigest()
+
+
+def is_admin_authenticated(request: Request) -> bool:
+    if not ADMIN_PASSWORD:
+        return False
+    token = request.cookies.get(SESSION_COOKIE, "")
+    try:
+        expires, nonce, signature = token.split(".")
+        payload = f"{expires}.{nonce}"
+        now = time.time()
+        return (now < int(expires) <= now + SESSION_TTL
+                and len(nonce) == 64
+                and hmac.compare_digest(signature, session_signature(payload)))
+    except (ValueError, TypeError, OverflowError):
+        return False
+
+
+def require_admin(request: Request) -> None:
     """保護會修改資料的 API。
 
     公開頁只能讀資料；編輯、刪除、匯入、同步都需要管理密碼。
@@ -162,8 +227,72 @@ def require_admin(x_admin_password: str = Header(default="")) -> None:
 
     if not ADMIN_PASSWORD:
         raise HTTPException(status_code=403, detail="尚未設定 ADMIN_PASSWORD")
-    if x_admin_password != ADMIN_PASSWORD:
-        raise HTTPException(status_code=401, detail="管理密碼錯誤")
+    if not is_admin_authenticated(request):
+        raise HTTPException(status_code=401, detail="請先登入管理後台，或登入已過期。")
+
+
+class LoginPayload(BaseModel):
+    password: str
+
+
+def is_loopback_peer(request: Request) -> bool:
+    try:
+        return bool(request.client and ipaddress.ip_address(request.client.host).is_loopback)
+    except ValueError:
+        return False
+
+
+def login_client_ip(request: Request) -> str:
+    host = request.client.host if request.client else "unknown"
+    # Only trust forwarded addresses from a local reverse proxy; use its last hop.
+    if is_loopback_peer(request) and request.headers.get("x-forwarded-for"):
+        forwarded = request.headers["x-forwarded-for"].split(",")[-1].strip()
+        try:
+            return str(ipaddress.ip_address(forwarded))
+        except ValueError:
+            pass
+    return host
+
+
+@app.post("/api/admin/login")
+def admin_login(payload: LoginPayload, request: Request, response: Response) -> dict:
+    if not ADMIN_PASSWORD:
+        raise HTTPException(status_code=403, detail="尚未設定 ADMIN_PASSWORD")
+    now = time.monotonic()
+    ip = login_client_ip(request)
+    with login_lock:
+        for key, (failures, until) in list(login_attempts.items()):
+            if until <= now and (not failures or failures[-1] <= now - LOGIN_WINDOW):
+                del login_attempts[key]
+        failures, until = login_attempts.get(ip, ([], 0))
+        if until > now:
+            raise HTTPException(status_code=429, detail="登入失敗次數過多，請於 15 分鐘後再試。",
+                                headers={"Retry-After": str(math.ceil(until - now))})
+        failures = [attempt for attempt in failures if attempt > now - LOGIN_WINDOW]
+        if not hmac.compare_digest(payload.password.encode(), ADMIN_PASSWORD.encode()):
+            failures.append(now)
+            until = now + LOGIN_WINDOW if len(failures) >= LOGIN_MAX_FAILURES else 0
+            login_attempts[ip] = (failures, until)
+            if until:
+                raise HTTPException(status_code=429, detail="登入失敗次數過多，請於 15 分鐘後再試。",
+                                    headers={"Retry-After": str(LOGIN_WINDOW)})
+            raise HTTPException(status_code=401, detail="管理密碼錯誤")
+        login_attempts.pop(ip, None)
+    signed_payload = f"{int(time.time()) + SESSION_TTL}.{secrets.token_hex(32)}"
+    response.set_cookie(SESSION_COOKIE, f"{signed_payload}.{session_signature(signed_payload)}",
+                        max_age=SESSION_TTL, httponly=True, samesite="strict", path="/",
+                        secure=request.url.scheme == "https" or
+                        (is_loopback_peer(request) and
+                         request.headers.get("x-forwarded-proto", "").lower() == "https"))
+    response.headers["Cache-Control"] = "no-store"
+    return {"ok": True}
+
+
+@app.post("/api/admin/logout")
+def admin_logout(response: Response) -> dict:
+    response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="strict")
+    response.headers["Cache-Control"] = "no-store"
+    return {"ok": True}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -181,21 +310,23 @@ def map_index() -> str:
 
 
 @app.get("/admin", response_class=HTMLResponse)
-def admin_index() -> str:
+def admin_index(request: Request) -> HTMLResponse:
     """管理後台首頁。
 
     為了讓專案保持簡單，第一版先把 HTML/CSS/JS 放在同一個檔案。
     未來如果後台變大，再拆成 templates 與 static 檔案。
     """
 
-    return ADMIN_HTML
+    return HTMLResponse(ADMIN_HTML if is_admin_authenticated(request) else ADMIN_LOGIN_HTML,
+                        headers={"Cache-Control": "no-store"})
 
 
 @app.get("/api/admin/status")
-def admin_status() -> dict:
+def admin_status(request: Request, response: Response) -> dict:
     """讓前端知道管理密碼是否已設定。"""
 
-    return {"password_configured": bool(ADMIN_PASSWORD)}
+    response.headers["Cache-Control"] = "no-store"
+    return {"password_configured": bool(ADMIN_PASSWORD), "authenticated": is_admin_authenticated(request)}
 
 
 @app.post("/api/admin/check")
@@ -213,17 +344,39 @@ def list_restaurants(
 ) -> dict:
     """回傳餐廳列表，支援關鍵字、地區、分類篩選。"""
 
+    return restaurant_list(keyword, area, category)
+
+
+def restaurant_list(keyword: str, area: str, category: str, *, internal: bool = False) -> dict:
+    """Share list filters while keeping internal serialization explicit."""
     restaurants = db.search(keyword, limit=200) if keyword.strip() else db.all()
     if area:
         restaurants = [restaurant for restaurant in restaurants if (restaurant.area or "") == area]
     if category:
         restaurants = [restaurant for restaurant in restaurants if restaurant.category == category]
     return {
-        "restaurants": [restaurant_to_dict(restaurant) for restaurant in restaurants],
+        "restaurants": [restaurant_to_dict(restaurant, internal=internal) for restaurant in restaurants],
         "areas": db.areas(),
         "categories": db.categories(),
         "tags": db.all_tags(),
     }
+
+
+@app.get("/api/admin/restaurants")
+def admin_list_restaurants(response: Response, keyword: str = "", area: str = "", category: str = "",
+                           _: None = Depends(require_admin)) -> dict:
+    response.headers["Cache-Control"] = "no-store"
+    return restaurant_list(keyword, area, category, internal=True)
+
+
+@app.get("/api/admin/restaurants/{restaurant_id}")
+def admin_get_restaurant(restaurant_id: int, response: Response,
+                         _: None = Depends(require_admin)) -> dict:
+    restaurant = db.get(restaurant_id)
+    if not restaurant:
+        raise HTTPException(status_code=404, detail="找不到這間餐廳")
+    response.headers["Cache-Control"] = "no-store"
+    return restaurant_to_dict(restaurant, internal=True)
 
 
 @app.get("/api/restaurants/{restaurant_id}")
@@ -255,6 +408,7 @@ def update_restaurant(
 ) -> dict:
     """更新餐廳資料。"""
 
+    previous = db.get(restaurant_id)
     restaurant = db.update_restaurant(
         restaurant_id=restaurant_id,
         name=payload.name,
@@ -278,7 +432,9 @@ def update_restaurant(
     )
     if not restaurant:
         raise HTTPException(status_code=404, detail="找不到這間餐廳")
-    return restaurant_to_dict(restaurant)
+    if previous and previous.image_url != restaurant.image_url:
+        cleanup_local_image(previous.image_url)
+    return restaurant_to_dict(restaurant, internal=True)
 
 
 @app.delete("/api/restaurants/{restaurant_id}")
@@ -288,8 +444,10 @@ def delete_restaurant(
 ) -> dict:
     """刪除餐廳。"""
 
-    if not db.delete_restaurant(restaurant_id):
+    restaurant = db.get(restaurant_id)
+    if not restaurant or not db.delete_restaurant(restaurant_id):
         raise HTTPException(status_code=404, detail="找不到這間餐廳")
+    cleanup_local_image(restaurant.image_url)
     return {"ok": True}
 
 
@@ -308,7 +466,7 @@ def append_comment(
     )
     if not restaurant:
         raise HTTPException(status_code=404, detail="找不到這間餐廳")
-    return restaurant_to_dict(restaurant)
+    return restaurant_to_dict(restaurant, internal=True)
 
 
 @app.post("/api/restaurants/{restaurant_id}/image")
@@ -322,23 +480,74 @@ async def upload_restaurant_image(
     if not db.get(restaurant_id):
         raise HTTPException(status_code=404, detail="找不到這間餐廳")
     content_type = (request.headers.get("content-type") or "").split(";", 1)[0].strip().lower()
-    suffix = ALLOWED_IMAGE_TYPES.get(content_type)
-    if not suffix:
-        raise HTTPException(status_code=400, detail="只支援 JPG、PNG、WEBP、GIF 圖片")
-
-    data = await request.body()
+    length = request.headers.get("content-length")
+    if length is not None:
+        try:
+            size = int(length)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="無效的 Content-Length")
+        if size < 0:
+            raise HTTPException(status_code=400, detail="無效的 Content-Length")
+        if size > MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail="圖片不能超過 5 MB")
+    data = bytearray()
+    async for chunk in request.stream():
+        if len(data) + len(chunk) > MAX_IMAGE_BYTES:
+            raise HTTPException(status_code=413, detail="圖片不能超過 5 MB")
+        data.extend(chunk)
     if not data:
         raise HTTPException(status_code=400, detail="沒有收到圖片資料")
-    if len(data) > MAX_IMAGE_BYTES:
-        raise HTTPException(status_code=400, detail="圖片不能超過 5 MB")
+    detected_type = detect_image_type(data)
+    if not detected_type or (content_type.startswith("image/") and content_type != detected_type):
+        raise HTTPException(status_code=400, detail="圖片內容或格式不符，只支援 JPG、PNG、WEBP、GIF")
+    suffix = ALLOWED_IMAGE_TYPES[detected_type]
     filename = f"restaurant-{restaurant_id}-{uuid.uuid4().hex}{suffix}"
     path = RESTAURANT_IMAGE_DIR / filename
     path.write_bytes(data)
 
-    restaurant = db.update_image_url(restaurant_id, f"/uploads/restaurants/{filename}")
+    try:
+        previous = db.get(restaurant_id)
+        if not previous:
+            raise HTTPException(status_code=404, detail="找不到這間餐廳")
+        restaurant = db.update_image_url(restaurant_id, f"/uploads/restaurants/{filename}")
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
     if not restaurant:
+        path.unlink(missing_ok=True)
         raise HTTPException(status_code=404, detail="找不到這間餐廳")
-    return restaurant_to_dict(restaurant)
+    cleanup_local_image(previous.image_url)
+    return restaurant_to_dict(restaurant, internal=True)
+
+
+def detect_image_type(data: bytes | bytearray) -> str | None:
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def cleanup_local_image(url: str | None) -> None:
+    """Remove only safe, unreferenced uploads contained in the image directory."""
+    safe = sanitize_url(url, image=True)
+    if not safe or not safe.startswith("/uploads/restaurants/"):
+        return
+    with db.session() as conn:
+        if conn.execute("SELECT 1 FROM restaurants WHERE image_url = ? LIMIT 1", (safe,)).fetchone():
+            return
+    root = RESTAURANT_IMAGE_DIR.resolve()
+    path = root / safe.rsplit("/", 1)[-1]
+    if not path.resolve().is_relative_to(root):
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logging.getLogger(__name__).warning("無法清除舊的餐廳圖片：%s", path)
 
 
 @app.post("/api/sync-sheet")
@@ -394,9 +603,9 @@ def import_sheet(_: None = Depends(require_admin)) -> dict:
             name=name,
             category=category,
             area=row.get("area", "").strip() or None,
-            google_maps_url=row.get("google_maps_url", "").strip() or None,
-            tabelog_url=row.get("tabelog_url", "").strip() or None,
-            image_url=row.get("image_url", "").strip() or None,
+            google_maps_url=sanitize_url(row.get("google_maps_url")),
+            tabelog_url=sanitize_url(row.get("tabelog_url")),
+            image_url=sanitize_url(row.get("image_url"), image=True),
             recommended_by=row.get("recommended_by", "").strip() or None,
             comments=row.get("comments", "").strip(),
             keywords=keywords or [name, category],
@@ -515,7 +724,8 @@ def create_database_backup() -> Path:
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = BACKUP_DIR / f"restaurants_{timestamp}.sqlite3"
-    source = sqlite3.connect(DB_PATH)
+    source = sqlite3.connect(DB_PATH, timeout=15.0)
+    source.execute("PRAGMA busy_timeout = 15000")
     destination = sqlite3.connect(backup_path)
     try:
         source.backup(destination)
@@ -571,7 +781,52 @@ def my_maps_embed_url(url: str) -> str:
                 mid = parts[index + 1]
     if not mid:
         return ""
-    return f"https://www.google.com/maps/d/embed?mid={mid}&ehbc=2E312F"
+    return "https://www.google.com/maps/d/embed?" + urlencode({"mid": mid, "ehbc": "2E312F"})
+
+
+ADMIN_LOGIN_HTML = r"""
+<!doctype html>
+<html lang="zh-Hant">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>管理後台登入</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+    padding: 24px; background: #f8f3ee; color: #2d251f; font-family: system-ui, sans-serif; }
+  main { width: 100%; max-width: 420px; padding: 32px; background: #fffdf9;
+    border: 1px solid #ead8c8; border-radius: 16px; }
+  h1 { margin-top: 0; font-size: 24px; }
+  input, button { width: 100%; padding: 12px; margin-top: 12px; border-radius: 8px;
+    border: 1px solid #d9b89d; font: inherit; }
+  button { background: #893d27; color: white; cursor: pointer; }
+  #loginMessage { color: #9e2f20; }
+</style></head>
+<body>
+  <main>
+    <h1>管理後台登入</h1>
+    <form id="loginForm">
+      <label>管理密碼 <input id="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit">登入</button>
+      <p id="loginMessage" role="alert"></p>
+    </form>
+  </main>
+  <script>
+    document.getElementById("loginForm").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const message = document.getElementById("loginMessage");
+      try {
+        const response = await fetch("/api/admin/login", {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({password: document.getElementById("password").value})
+        });
+        if (response.ok) { window.location.replace("/admin"); return; }
+        const data = await response.json();
+        message.textContent = typeof data.detail === "string" ? data.detail : "登入失敗";
+      } catch (error) { message.textContent = "連線失敗，請稍後再試。"; }
+    });
+  </script>
+</body></html>
+"""
 
 
 PUBLIC_HTML = r"""
@@ -903,7 +1158,6 @@ PUBLIC_HTML = r"""
           <button id="langJa" type="button">日本語</button>
         </div>
         <a class="nav-link" href="/map" data-i18n="mapLink">地圖</a>
-        <a class="nav-link" href="/admin" data-i18n="adminLink">管理後台</a>
       </div>
     </div>
   </header>
@@ -924,6 +1178,21 @@ PUBLIC_HTML = r"""
   </main>
 
   <script>
+    function safeUrl(value) {
+      const url = String(value || "").trim();
+      if (!/^https?:\/\//i.test(url) || /[\s\x00-\x1f\x7f\\]/.test(url)) return "";
+      try {
+        const parsed = new URL(url);
+        return ["http:", "https:"].includes(parsed.protocol) && parsed.hostname ? url : "";
+      } catch { return ""; }
+    }
+
+    function safeImageUrl(value) {
+      const url = String(value || "").trim();
+      if (/^\/uploads\/restaurants\/[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(url) && !url.includes("..")) return url;
+      return safeUrl(url);
+    }
+
     const translations = {
       zh: {
         title: "共享美食清單",
@@ -931,7 +1200,6 @@ PUBLIC_HTML = r"""
         introTitle: "今天想去哪裡吃？",
         introCopy: "用店名、地區或料理類型快速翻找大家存下來的店。",
         mapLink: "地圖",
-        adminLink: "管理後台",
         searchPlaceholder: "搜尋店名、分類、地區、評論",
         allAreas: "全部地區",
         allCategories: "全部分類",
@@ -947,7 +1215,6 @@ PUBLIC_HTML = r"""
         introTitle: "今日はどこで食べる？",
         introCopy: "店名・エリア・料理ジャンルから、保存したお店をすぐに探せます。",
         mapLink: "地図",
-        adminLink: "管理画面",
         searchPlaceholder: "店名・分類・エリア・コメントを検索",
         allAreas: "すべてのエリア",
         allCategories: "すべての分類",
@@ -1026,9 +1293,9 @@ PUBLIC_HTML = r"""
       $("grid").innerHTML = "";
       state.restaurants.forEach((restaurant) => {
         const card = document.createElement("article");
-        card.className = `card ${restaurant.image_url ? "has-image" : ""}`;
+        card.className = `card ${safeImageUrl(restaurant.image_url) ? "has-image" : ""}`;
         card.innerHTML = `
-          ${restaurant.image_url ? `<img class="food-image" src="${escapeAttr(restaurant.image_url)}" alt="${escapeAttr(restaurant.name)}" onerror="this.remove()">` : ""}
+          ${safeImageUrl(restaurant.image_url) ? `<img class="food-image" src="${escapeAttr(safeImageUrl(restaurant.image_url))}" alt="${escapeAttr(restaurant.name)}" onerror="this.remove()">` : ""}
           <h2>${escapeHtml(restaurant.name)}</h2>
           <div class="meta">ID ${restaurant.id} / ${escapeHtml(restaurant.category)} ${escapeHtml(restaurant.area || "")}</div>
           ${restaurant.recommended_by ? `<div class="meta">${t("recommendedBy")}：${escapeHtml(restaurant.recommended_by)}</div>` : ""}
@@ -1037,8 +1304,8 @@ PUBLIC_HTML = r"""
           <div class="tags">${tagHtml(restaurant.tags || restaurant.keywords || [])}</div>
           <div class="comments">${escapeHtml(shortText(displayCommentText(restaurant)))}</div>
           <div class="links">
-            ${restaurant.google_maps_url ? `<a target="_blank" rel="noreferrer" href="${escapeAttr(restaurant.google_maps_url)}">Google Maps</a>` : ""}
-            ${restaurant.tabelog_url ? `<a target="_blank" rel="noreferrer" href="${escapeAttr(restaurant.tabelog_url)}">食べログ</a>` : ""}
+            ${safeUrl(restaurant.google_maps_url) ? `<a target="_blank" rel="noreferrer" href="${escapeAttr(safeUrl(restaurant.google_maps_url))}">Google Maps</a>` : ""}
+            ${safeUrl(restaurant.tabelog_url) ? `<a target="_blank" rel="noreferrer" href="${escapeAttr(safeUrl(restaurant.tabelog_url))}">食べログ</a>` : ""}
           </div>
         `;
         $("grid").appendChild(card);
@@ -1254,7 +1521,6 @@ MAP_HTML = r"""
       </div>
       <div class="actions">
         <a class="nav-link" href="/">清單</a>
-        <a class="nav-link" href="/admin">管理後台</a>
       </div>
     </div>
   </header>
@@ -1603,21 +1869,13 @@ ADMIN_HTML = r"""
       </div>
       <a class="nav-link" href="/" data-i18n="publicPage">公開頁</a>
       <a class="nav-link" href="/map" data-i18n="mapPage">地圖</a>
+      <button id="logoutButton" type="button" data-i18n="logout">登出</button>
       <button id="importSheet" class="primary" data-i18n="importSheet">從 Google Sheet 匯入</button>
       <button id="syncSheet" data-i18n="syncSheet">DB 同步到 Sheet</button>
       <button id="reload" data-i18n="reload">重新整理</button>
     </div>
   </header>
 
-  <section id="loginPanel" class="login-panel">
-    <div class="login-box">
-      <h2 data-i18n="adminPasswordTitle">管理密碼</h2>
-      <p data-i18n="adminPasswordHelp">編輯、刪除、匯入與同步需要管理密碼。</p>
-      <input id="adminPassword" type="password" data-i18n-placeholder="adminPasswordPlaceholder" placeholder="輸入 ADMIN_PASSWORD">
-      <button id="loginButton" class="primary" type="button" data-i18n="login">進入管理後台</button>
-      <div id="loginMessage" class="message"></div>
-    </div>
-  </section>
 
   <main>
     <section class="sidebar">
@@ -1708,9 +1966,25 @@ ADMIN_HTML = r"""
   </main>
 
   <script>
+    function safeUrl(value) {
+      const url = String(value || "").trim();
+      if (!/^https?:\/\//i.test(url) || /[\s\x00-\x1f\x7f\\]/.test(url)) return "";
+      try {
+        const parsed = new URL(url);
+        return ["http:", "https:"].includes(parsed.protocol) && parsed.hostname ? url : "";
+      } catch { return ""; }
+    }
+
+    function safeImageUrl(value) {
+      const url = String(value || "").trim();
+      if (/^\/uploads\/restaurants\/[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(url) && !url.includes("..")) return url;
+      return safeUrl(url);
+    }
+
     const translations = {
       zh: {
         adminTitle: "食べログ Bot 管理後台",
+        logout: "登出",
         publicPage: "公開頁",
         mapPage: "地圖",
         importSheet: "從 Google Sheet 匯入",
@@ -1720,10 +1994,6 @@ ADMIN_HTML = r"""
         cleanupTaxonomy: "整理地區/分類",
         enrichPrices: "補抓價格",
         enrichHours: "補抓營業時間",
-        adminPasswordTitle: "管理密碼",
-        adminPasswordHelp: "編輯、刪除、匯入與同步需要管理密碼。",
-        adminPasswordPlaceholder: "輸入 ADMIN_PASSWORD",
-        login: "進入管理後台",
         searchPlaceholder: "搜尋店名、分類、地區、評論",
         allAreas: "全部地區",
         allCategories: "全部分類",
@@ -1756,7 +2026,6 @@ ADMIN_HTML = r"""
         prev: "上一頁",
         next: "下一頁",
         noComments: "目前沒有獨立評論紀錄。",
-        passwordNotConfigured: "尚未設定 ADMIN_PASSWORD。請先在 .env 裡加入管理密碼。",
         saveFailed: "儲存失敗，請確認欄位內容。",
         saved: "已儲存修改。",
         appendFailed: "追加評論失敗。",
@@ -1791,11 +2060,10 @@ ADMIN_HTML = r"""
         syncFailed: "同步失敗",
         syncDone: (count, verified, maxId, worksheet) =>
           `已同步 ${count} 筆餐廳到 Google Sheet。\nSheet 分頁：${worksheet}\n讀回確認：${verified} 筆 / 最大 ID：${maxId ?? "-"}`,
-        passwordRequired: "請輸入管理密碼。",
-        passwordWrong: "管理密碼錯誤。"
       },
       ja: {
         adminTitle: "食べログ Bot 管理画面",
+        logout: "ログアウト",
         publicPage: "公開ページ",
         mapPage: "地図",
         importSheet: "Google Sheet から取り込み",
@@ -1805,10 +2073,6 @@ ADMIN_HTML = r"""
         cleanupTaxonomy: "エリア/分類を整理",
         enrichPrices: "価格を補完",
         enrichHours: "営業時間を補完",
-        adminPasswordTitle: "管理パスワード",
-        adminPasswordHelp: "編集・削除・取り込み・同期には管理パスワードが必要です。",
-        adminPasswordPlaceholder: "ADMIN_PASSWORD を入力",
-        login: "管理画面に入る",
         searchPlaceholder: "店名・分類・エリア・コメントを検索",
         allAreas: "すべてのエリア",
         allCategories: "すべての分類",
@@ -1841,7 +2105,6 @@ ADMIN_HTML = r"""
         prev: "前へ",
         next: "次へ",
         noComments: "独立したコメント記録はまだありません。",
-        passwordNotConfigured: "ADMIN_PASSWORD が未設定です。.env に管理パスワードを追加してください。",
         saveFailed: "保存に失敗しました。入力内容を確認してください。",
         saved: "変更を保存しました。",
         appendFailed: "コメントの追加に失敗しました。",
@@ -1876,8 +2139,6 @@ ADMIN_HTML = r"""
         syncFailed: "同期に失敗しました",
         syncDone: (count, verified, maxId, worksheet) =>
           `${count} 件のレストランを Google Sheet に同期しました。\nシート：${worksheet}\n読み戻し確認：${verified} 件 / 最大 ID：${maxId ?? "-"}`,
-        passwordRequired: "管理パスワードを入力してください。",
-        passwordWrong: "管理パスワードが違います。"
       }
     };
     const savedLanguage = localStorage.getItem("tabelogLanguage");
@@ -1888,8 +2149,7 @@ ADMIN_HTML = r"""
       categories: [],
       page: 1,
       pageSize: 10,
-      language: savedLanguage || "zh",
-      adminPassword: localStorage.getItem("tabelogAdminPassword") || ""
+      language: savedLanguage || "zh"
     };
 
     const $ = (id) => document.getElementById(id);
@@ -1955,38 +2215,17 @@ ADMIN_HTML = r"""
       $("message").style.color = isError ? "var(--danger)" : "var(--accent-strong)";
     }
 
-    function setLoginMessage(text, isError = false) {
-      $("loginMessage").textContent = text;
-      $("loginMessage").style.color = isError ? "var(--danger)" : "var(--accent-strong)";
-    }
-
     function adminHeaders() {
-      return {
-        "Content-Type": "application/json",
-        "X-Admin-Password": state.adminPassword
-      };
+      return {"Content-Type": "application/json"};
     }
 
-    async function checkAdminPassword() {
-      const response = await fetch("/api/admin/check", {
-        method: "POST",
-        headers: {"X-Admin-Password": state.adminPassword}
-      });
-      return response.ok;
-    }
-
-    async function initAdminAuth() {
-      const status = await fetch("/api/admin/status").then((response) => response.json());
-      if (!status.password_configured) {
-        setLoginMessage(t("passwordNotConfigured"), true);
-        return;
+    async function adminFetch(url, options = {}) {
+      const response = await fetch(url, {...options, credentials: "same-origin"});
+      if (response.status === 401) {
+        window.location.replace("/admin");
+        throw new Error("Session expired");
       }
-      if (state.adminPassword && await checkAdminPassword()) {
-        $("loginPanel").classList.add("hidden");
-        return;
-      }
-      localStorage.removeItem("tabelogAdminPassword");
-      state.adminPassword = "";
+      return response;
     }
 
     function keywordParams() {
@@ -1998,7 +2237,7 @@ ADMIN_HTML = r"""
     }
 
     async function loadRestaurants() {
-      const response = await fetch(`/api/restaurants?${keywordParams()}`);
+      const response = await adminFetch(`/api/admin/restaurants?${keywordParams()}`);
       const data = await response.json();
       state.restaurants = data.restaurants.sort((a, b) => a.id - b.id);
       state.areas = data.areas;
@@ -2067,7 +2306,7 @@ ADMIN_HTML = r"""
     }
 
     async function selectRestaurant(id) {
-      const response = await fetch(`/api/restaurants/${id}`);
+      const response = await adminFetch(`/api/admin/restaurants/${id}`);
       const restaurant = await response.json();
       state.selectedId = restaurant.id;
       $("empty").hidden = true;
@@ -2097,6 +2336,7 @@ ADMIN_HTML = r"""
     }
 
     function renderImagePreview(url) {
+      url = safeImageUrl(url);
       if (!url) {
         $("imagePreview").hidden = true;
         $("imagePreview").removeAttribute("src");
@@ -2159,7 +2399,7 @@ ADMIN_HTML = r"""
     $("editorForm").addEventListener("submit", async (event) => {
       event.preventDefault();
       if (!state.selectedId) return;
-      const response = await fetch(`/api/restaurants/${state.selectedId}`, {
+      const response = await adminFetch(`/api/restaurants/${state.selectedId}`, {
         method: "PUT",
         headers: adminHeaders(),
         body: JSON.stringify(editorPayload())
@@ -2174,7 +2414,7 @@ ADMIN_HTML = r"""
 
     $("appendComment").addEventListener("click", async () => {
       if (!state.selectedId || !$("newComment").value.trim()) return;
-      const response = await fetch(`/api/restaurants/${state.selectedId}/comments`, {
+      const response = await adminFetch(`/api/restaurants/${state.selectedId}/comments`, {
         method: "POST",
         headers: adminHeaders(),
         body: JSON.stringify({comment: $("newComment").value.trim(), created_by: "Admin"})
@@ -2206,10 +2446,9 @@ ADMIN_HTML = r"""
       button.textContent = t("uploadingImage");
       try {
         const data = await file.arrayBuffer();
-        const response = await fetch(`/api/restaurants/${state.selectedId}/image`, {
+        const response = await adminFetch(`/api/restaurants/${state.selectedId}/image`, {
           method: "POST",
           headers: {
-            "X-Admin-Password": state.adminPassword,
             "Content-Type": file.type
           },
           body: data
@@ -2234,9 +2473,9 @@ ADMIN_HTML = r"""
       cleanupButton.disabled = true;
       cleanupButton.textContent = t("cleaning");
       try {
-        const response = await fetch("/api/cleanup-taxonomy", {
+        const response = await adminFetch("/api/cleanup-taxonomy", {
           method: "POST",
-          headers: {"X-Admin-Password": state.adminPassword}
+          headers: adminHeaders()
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || t("cleanupFailed"));
@@ -2255,7 +2494,7 @@ ADMIN_HTML = r"""
       enrichButton.disabled = true;
       enrichButton.textContent = t("enriching");
       try {
-        const response = await fetch("/api/enrich-prices", {
+        const response = await adminFetch("/api/enrich-prices", {
           method: "POST",
           headers: adminHeaders(),
           body: JSON.stringify({limit: 5})
@@ -2277,7 +2516,7 @@ ADMIN_HTML = r"""
       enrichHoursButton.disabled = true;
       enrichHoursButton.textContent = t("enrichingHours");
       try {
-        const response = await fetch("/api/enrich-hours", {
+        const response = await adminFetch("/api/enrich-hours", {
           method: "POST",
           headers: adminHeaders(),
           body: JSON.stringify({limit: 5})
@@ -2299,9 +2538,9 @@ ADMIN_HTML = r"""
       backupButton.disabled = true;
       backupButton.textContent = t("backingUp");
       try {
-        const response = await fetch("/api/backups", {
+        const response = await adminFetch("/api/backups", {
           method: "POST",
-          headers: {"X-Admin-Password": state.adminPassword}
+          headers: adminHeaders()
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || t("backupFailed"));
@@ -2317,9 +2556,9 @@ ADMIN_HTML = r"""
     $("deleteRestaurant").addEventListener("click", async () => {
       if (!state.selectedId) return;
       if (!confirm(t("deleteConfirm"))) return;
-      const response = await fetch(`/api/restaurants/${state.selectedId}`, {
+      const response = await adminFetch(`/api/restaurants/${state.selectedId}`, {
         method: "DELETE",
-        headers: {"X-Admin-Password": state.adminPassword}
+        headers: adminHeaders()
       });
       if (!response.ok) {
         setMessage(t("deleteFailed"), true);
@@ -2335,9 +2574,9 @@ ADMIN_HTML = r"""
       button.disabled = true;
       button.textContent = t("importing");
       try {
-        const response = await fetch("/api/import-sheet", {
+        const response = await adminFetch("/api/import-sheet", {
           method: "POST",
-          headers: {"X-Admin-Password": state.adminPassword}
+          headers: adminHeaders()
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || t("importFailed"));
@@ -2358,15 +2597,15 @@ ADMIN_HTML = r"""
       button.disabled = true;
       button.textContent = t("syncing");
       try {
-        const response = await fetch("/api/sync-sheet", {
+        const response = await adminFetch("/api/sync-sheet", {
           method: "POST",
-          headers: {"X-Admin-Password": state.adminPassword}
+          headers: adminHeaders()
         });
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || t("syncFailed"));
         alert(t("syncDone", data.count, data.verified_count, data.max_id, data.worksheet_name));
-        if (data.worksheet_url) {
-          window.open(data.worksheet_url, "_blank", "noopener,noreferrer");
+        if (safeUrl(data.worksheet_url)) {
+          window.open(safeUrl(data.worksheet_url), "_blank", "noopener,noreferrer");
         }
       } catch (error) {
         alert(error.message);
@@ -2377,19 +2616,9 @@ ADMIN_HTML = r"""
     });
 
     $("reload").addEventListener("click", loadRestaurants);
-    $("loginButton").addEventListener("click", async () => {
-      state.adminPassword = $("adminPassword").value;
-      if (!state.adminPassword) {
-        setLoginMessage(t("passwordRequired"), true);
-        return;
-      }
-      if (!await checkAdminPassword()) {
-        setLoginMessage(t("passwordWrong"), true);
-        return;
-      }
-      localStorage.setItem("tabelogAdminPassword", state.adminPassword);
-      $("loginPanel").classList.add("hidden");
-      setLoginMessage("");
+    $("logoutButton").addEventListener("click", async () => {
+      const response = await adminFetch("/api/admin/logout", {method: "POST"});
+      if (response.ok) window.location.replace("/admin");
     });
 
     $("keyword").addEventListener("input", debounce(() => {
@@ -2426,7 +2655,6 @@ ADMIN_HTML = r"""
     }
 
     applyLanguage();
-    initAdminAuth();
     loadRestaurants();
   </script>
 </body>

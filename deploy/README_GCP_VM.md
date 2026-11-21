@@ -118,7 +118,10 @@ sudo nano .env
 
 ```env
 ADMIN_PASSWORD=你自己的管理密碼
+SESSION_SECRET=自行產生並保存的隨機金鑰
 ```
+
+可用 `python3 -c "import secrets; print(secrets.token_hex(32))"` 產生 `SESSION_SECRET`。請保持金鑰固定且保密；未設定時每個程序會使用暫時金鑰，重啟即會使登入失效。後台使用 12 小時的簽章 cookie 並提供登出，瀏覽器不再保存管理密碼，API 文件端點已停用。
 
 ### 2. 安裝 web 後台服務
 
@@ -202,6 +205,8 @@ sudo apt install -y caddy
 ```text
 --host 127.0.0.1 --port 8000
 ```
+
+正式管理操作請使用 HTTPS，並讓 Caddy 的反向代理傳遞 `X-Forwarded-Proto: https`，後台才會對 cookie 設定 `Secure`。只允許本機代理存取後端，可避免外部用戶偽造代理標頭；Caddy 應維持預設的轉送標頭處理。
 
 然後：
 

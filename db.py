@@ -22,6 +22,8 @@ from pathlib import Path
 from collections.abc import Iterator
 from typing import Iterable
 
+from url_utils import validate_url
+
 
 @dataclass(frozen=True)
 class Restaurant:
@@ -91,7 +93,9 @@ class RestaurantDB:
 
     def connect(self) -> sqlite3.Connection:
         """建立 SQLite 連線，並讓查詢結果可以用 row["欄位名"] 讀取。"""
-        conn = sqlite3.connect(self.path)
+        conn = sqlite3.connect(self.path, timeout=15.0)
+        conn.execute("PRAGMA busy_timeout = 15000")
+        conn.execute("PRAGMA foreign_keys = ON")
         conn.row_factory = sqlite3.Row
         return conn
 
@@ -120,6 +124,8 @@ class RestaurantDB:
         """
 
         with self.session() as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS restaurants (
@@ -344,16 +350,19 @@ class RestaurantDB:
         """新增或覆蓋同一家餐廳。
 
         這裡用 UNIQUE(name, tabelog_url) 避免同一間餐廳重複建立。
-        如果 name + tabelog_url 已存在，INSERT OR REPLACE 會保留原本 id。
+        如果 name + tabelog_url 已存在，更新原列並保留 id 與既有評論。
         """
 
+        tabelog_url = validate_url(tabelog_url)
+        google_maps_url = validate_url(google_maps_url)
+        image_url = validate_url(image_url, image=True)
         category = normalize_category(category)
         area = normalize_area(area)
         clean_keywords = clean_keyword_list(keywords, name=name, category=category, area=area)
         with self.session() as conn:
             cur = conn.execute(
                 """
-                INSERT OR REPLACE INTO restaurants (
+                INSERT INTO restaurants (
                     id, name, category, area, tabelog_url, google_maps_url, image_url, comments,
                     keywords_json, source_channel_id, source_message_id, created_by, recommended_by,
                     lunch_budget_text, lunch_budget_min, lunch_budget_max,
@@ -364,6 +373,29 @@ class RestaurantDB:
                     (SELECT id FROM restaurants WHERE name = ? AND COALESCE(tabelog_url, '') = COALESCE(?, '')),
                     ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
+                ON CONFLICT(id) DO UPDATE SET
+                    name = excluded.name,
+                    category = excluded.category,
+                    area = excluded.area,
+                    tabelog_url = excluded.tabelog_url,
+                    google_maps_url = excluded.google_maps_url,
+                    image_url = excluded.image_url,
+                    comments = excluded.comments,
+                    keywords_json = excluded.keywords_json,
+                    source_channel_id = excluded.source_channel_id,
+                    source_message_id = excluded.source_message_id,
+                    created_by = excluded.created_by,
+                    recommended_by = excluded.recommended_by,
+                    lunch_budget_text = excluded.lunch_budget_text,
+                    lunch_budget_min = excluded.lunch_budget_min,
+                    lunch_budget_max = excluded.lunch_budget_max,
+                    dinner_budget_text = excluded.dinner_budget_text,
+                    dinner_budget_min = excluded.dinner_budget_min,
+                    dinner_budget_max = excluded.dinner_budget_max,
+                    price_updated_at = excluded.price_updated_at,
+                    business_hours_text = excluded.business_hours_text,
+                    business_hours_updated_at = excluded.business_hours_updated_at
+                RETURNING id
                 """,
                 (
                     name,
@@ -391,7 +423,7 @@ class RestaurantDB:
                     business_hours_updated_at,
                 ),
             )
-            restaurant_id = int(cur.lastrowid or conn.execute("SELECT last_insert_rowid()").fetchone()[0])
+            restaurant_id = int(cur.fetchone()[0])
             self._set_tags(conn, restaurant_id, clean_keywords)
             legacy_comments = _remove_basic_info_placeholder(comments.strip())
             if legacy_comments:
@@ -537,6 +569,9 @@ class RestaurantDB:
         keywords_json 的 JSON 轉換，避免 admin_app.py 裡混入 SQL 細節。
         """
 
+        tabelog_url = validate_url(tabelog_url)
+        google_maps_url = validate_url(google_maps_url)
+        image_url = validate_url(image_url, image=True)
         category = normalize_category(category)
         area = normalize_area(area)
         clean_keywords = clean_keyword_list(keywords, name=name, category=category, area=area)
@@ -618,15 +653,30 @@ class RestaurantDB:
         """從 Google Sheet 匯入一間餐廳。
 
         和 add_restaurant 不同，這個方法允許保留 Sheet 裡的 id。
-        如果 id 已存在，就更新該筆；如果 id 不存在，就用 Sheet 的 id 建立。
+        優先更新既有 id，其次更新同名同網址的餐廳，保留既有評論。
+        只有兩者都不存在時，才用 Sheet 的 id（或自動編號）建立。
         這讓 Google Sheet 可以作為大量手動編輯後的回灌來源。
         """
 
+        tabelog_url = validate_url(tabelog_url)
+        google_maps_url = validate_url(google_maps_url)
+        image_url = validate_url(image_url, image=True)
         category = normalize_category(category)
         area = normalize_area(area)
         clean_keywords = clean_keyword_list(keywords, name=name, category=category, area=area)
         with self.session() as conn:
-            if restaurant_id and self.get(restaurant_id):
+            existing = None
+            if restaurant_id is not None:
+                existing = conn.execute(
+                    "SELECT id FROM restaurants WHERE id = ?", (restaurant_id,)
+                ).fetchone()
+            if existing is None:
+                existing = conn.execute(
+                    "SELECT id FROM restaurants WHERE name = ? AND COALESCE(tabelog_url, '') = COALESCE(?, '')",
+                    (name.strip(), tabelog_url),
+                ).fetchone()
+            if existing is not None:
+                restaurant_id = int(existing["id"])
                 conn.execute(
                     """
                     UPDATE restaurants
@@ -677,7 +727,7 @@ class RestaurantDB:
 
             cur = conn.execute(
                 """
-                INSERT OR REPLACE INTO restaurants (
+                INSERT INTO restaurants (
                     id, name, category, area, tabelog_url, google_maps_url, image_url, comments,
                     keywords_json, source_channel_id, source_message_id, created_by, recommended_by,
                     lunch_budget_text, lunch_budget_min, lunch_budget_max,
@@ -709,7 +759,7 @@ class RestaurantDB:
                     business_hours_updated_at,
                 ),
             )
-            new_id = int(restaurant_id or cur.lastrowid)
+            new_id = int(cur.lastrowid)
             self._set_tags(conn, new_id, clean_keywords)
             return new_id
 
@@ -819,6 +869,7 @@ class RestaurantDB:
     def update_image_url(self, restaurant_id: int, image_url: str | None) -> Restaurant | None:
         """只更新一間餐廳的圖片 URL。"""
 
+        image_url = validate_url(image_url, image=True)
         with self.session() as conn:
             cur = conn.execute(
                 "UPDATE restaurants SET image_url = ? WHERE id = ?",
