@@ -1,0 +1,298 @@
+
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #1f2933;
+      --muted: #657484;
+      --line: #d9e0e7;
+      --accent: #0f766e;
+      --accent-strong: #115e59;
+      --danger: #b42318;
+      --danger-bg: #fff0ed;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+      padding: 14px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    h1 {
+      font-size: 18px;
+      margin: 0;
+      font-weight: 700;
+    }
+
+    main {
+      display: grid;
+      grid-template-columns: minmax(300px, 420px) minmax(0, 1fr);
+      min-height: calc(100vh - 58px);
+    }
+
+    .sidebar {
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+      padding: 16px;
+      overflow: auto;
+    }
+
+    .editor {
+      padding: 18px 22px 28px;
+      overflow: auto;
+    }
+
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1fr 140px 140px;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 9px 10px;
+      font: inherit;
+      background: #fff;
+      color: var(--text);
+    }
+
+    textarea {
+      min-height: 150px;
+      resize: vertical;
+    }
+
+    button {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      padding: 9px 12px;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button.primary {
+      border-color: var(--accent);
+      background: var(--accent);
+      color: #fff;
+    }
+
+    button.primary:hover { background: var(--accent-strong); }
+
+    .nav-link {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 11px;
+      color: var(--accent);
+      text-decoration: none;
+      background: #fff;
+    }
+
+    button.danger {
+      border-color: #fecaca;
+      background: var(--danger-bg);
+      color: var(--danger);
+    }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .lang-switch {
+      display: inline-flex;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .lang-switch button {
+      border: 0;
+      border-right: 1px solid var(--line);
+      border-radius: 0;
+      color: var(--muted);
+      padding: 8px 10px;
+    }
+
+    .lang-switch button:last-child { border-right: 0; }
+    .lang-switch button.active {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .restaurant-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .row {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fff;
+      cursor: pointer;
+    }
+
+    .row.active {
+      border-color: var(--accent);
+      background: #dff3ef;
+      box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.16);
+    }
+
+    .row.active .row-title {
+      color: var(--accent-strong);
+    }
+
+    .row.active .row-meta {
+      color: #315f5b;
+    }
+
+    .row-title {
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    .row-meta, .hint, .status {
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .status {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin: 6px 0 10px;
+    }
+
+    .pager {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
+    .pager button {
+      padding: 5px 8px;
+      font-size: 12px;
+    }
+
+    .pager button:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin: 14px 0;
+    }
+
+    label {
+      display: grid;
+      gap: 5px;
+      font-size: 13px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    label span { color: var(--muted); }
+    label.full { grid-column: 1 / -1; }
+
+    .image-upload {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .image-upload input[type="file"] {
+      flex: 1;
+      min-width: 220px;
+    }
+
+    .image-preview {
+      width: 120px;
+      height: 90px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      object-fit: cover;
+      background: #edf5f3;
+    }
+
+    .image-preview[hidden] { display: none; }
+
+    .empty {
+      border: 1px dashed var(--line);
+      border-radius: 8px;
+      padding: 28px;
+      text-align: center;
+      color: var(--muted);
+      background: #fff;
+    }
+
+    .message {
+      margin-top: 10px;
+      min-height: 22px;
+      color: var(--accent-strong);
+      font-size: 14px;
+    }
+
+    .login-panel {
+      background: #f6f7f9;
+      border-bottom: 1px solid var(--line);
+      padding: 18px 22px;
+    }
+
+    .login-panel.hidden { display: none; }
+
+    .login-box {
+      max-width: 520px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+
+    .login-box h2 {
+      font-size: 17px;
+      margin: 0 0 6px;
+    }
+
+    .login-box p {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    @media (max-width: 860px) {
+      main { grid-template-columns: 1fr; }
+      .sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
+      .toolbar { grid-template-columns: 1fr; }
+      .form-grid { grid-template-columns: 1fr; }
+    }
+  

@@ -1,0 +1,47 @@
+
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>共享美食清單</title>
+  <link rel="stylesheet" href="/static/css/public.css">
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <div class="brand">
+        <div class="brand-mark">食</div>
+        <div>
+          <h1 data-i18n="title">共享美食清單</h1>
+          <div class="subtitle" data-i18n="subtitle">Discord 頻道裡收集的餐廳口袋名單</div>
+        </div>
+      </div>
+      <div class="header-actions">
+        <div class="lang-switch" aria-label="Language">
+          <button id="langZh" type="button">中文</button>
+          <button id="langJa" type="button">日本語</button>
+        </div>
+        <a class="nav-link" href="/map" data-i18n="mapLink">地圖</a>
+      </div>
+    </div>
+  </header>
+  <main>
+    <section class="intro">
+      <div>
+        <h2 class="intro-title" data-i18n="introTitle">今天想去哪裡吃？</h2>
+        <p class="intro-copy" data-i18n="introCopy">用店名、地區或料理類型快速翻找大家存下來的店。</p>
+      </div>
+      <div id="summary" class="count-pill"></div>
+    </section>
+    <div class="toolbar">
+      <input id="keyword" data-i18n-placeholder="searchPlaceholder" placeholder="搜尋店名、分類、地區、評論">
+      <select id="area"><option value="">全部地區</option></select>
+      <select id="category"><option value="">全部分類</option></select>
+    </div>
+    <div id="grid" class="grid"></div>
+  </main>
+
+  <script src="/static/js/public.js"></script>
+</body>
+</html>

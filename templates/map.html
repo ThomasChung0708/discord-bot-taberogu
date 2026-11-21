@@ -1,0 +1,42 @@
+
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>共享美食地圖</title>
+  <link rel="stylesheet" href="/static/css/map.css">
+</head>
+<body>
+  <header>
+    <div class="header-inner">
+      <div class="brand">
+        <div class="brand-mark">地</div>
+        <div>
+          <h1>共享美食地圖</h1>
+          <div class="subtitle">使用 Google My Maps 顯示目前共享地圖</div>
+        </div>
+      </div>
+      <div class="actions">
+        <a class="nav-link" href="/">清單</a>
+      </div>
+    </div>
+  </header>
+  <main>
+    <div id="mapContainer" class="map-frame">
+      <iframe
+        id="myMapsFrame"
+        src="__MY_MAPS_EMBED_URL__"
+        loading="lazy"
+        referrerpolicy="no-referrer-when-downgrade"
+        allowfullscreen
+      ></iframe>
+    </div>
+    <div id="emptyMap" class="empty" hidden>
+      <strong>還沒有設定 My Maps 網址。</strong>
+      請在 VM 的 <code>.env</code> 裡設定 <code>GOOGLE_MY_MAPS_URL</code>，再重啟網站服務。
+    </div>
+  </main>
+  <script src="/static/js/map.js"></script>
+</body>
+</html>
