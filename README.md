@@ -38,8 +38,8 @@ GOOGLE_SHEETS_WORKSHEET=restaurants
 GOOGLE_MY_MAPS_URL=你的 Google My Maps 分享網址
 ADMIN_PASSWORD=管理後台密碼
 SESSION_SECRET=自行產生並保存的隨機金鑰
-PUBLIC_WEB_URL=公開餐廳網頁網址
-PUBLIC_MAP_URL=公開地圖網頁網址
+PUBLIC_WEB_URL=https://discord-bottaberogudb.org/
+PUBLIC_MAP_URL=https://discord-bottaberogudb.org/map
 AUTO_SAVE_RESTAURANT_LINKS=true
 ALLOWED_TEXT_CHANNEL_NAMES=食べログ
 ALLOWED_TEXT_CHANNEL_IDS=
@@ -214,7 +214,9 @@ http://127.0.0.1:8000/admin
 http://127.0.0.1:8000
 ```
 
-如果在 VM 上公開給朋友看，請只把公開頁當作分享入口。管理後台雖然有密碼，但正式公開時仍建議搭配 HTTPS 或反向代理。
+VM 正式部署必須透過 Caddy 提供 HTTPS，admin service 維持監聽 `127.0.0.1:8000`，不要對外開放 TCP 8000。朋友使用 https://discord-bottaberogudb.org/ 與 https://discord-bottaberogudb.org/map；管理者使用 https://discord-bottaberogudb.org/admin。以上本機網址僅供開發測試。
+
+新 VM 的完整復原步驟見 [GCP VM 部署手冊](deploy/README_GCP_VM.md)，包含固定 IP、Cloudflare DNS、swap、Windows 資料搬移、systemd 與 Caddy。**只做 git clone 不會還原 `.env`、`service-account.json`、`restaurants.sqlite3`、`uploads/`**，必須另行搬回這些資料。更新時執行 git pull 後，必須重新啟動 `discord-tabelog-bot` 與 `discord-tabelog-admin`，讓分離的模板與靜態資源一起更新；不要覆寫上述非 git 資料。
 
 注意同步方向：
 
