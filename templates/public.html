@@ -1,47 +1,93 @@
-
 <!doctype html>
 <html lang="zh-Hant">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>共享美食清單</title>
-  <link rel="stylesheet" href="/static/css/public.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>食事筆記 · TC</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/public.css">
 </head>
-<body>
-  <header>
-    <div class="header-inner">
-      <div class="brand">
-        <div class="brand-mark">食</div>
-        <div>
-          <h1 data-i18n="title">共享美食清單</h1>
-          <div class="subtitle" data-i18n="subtitle">Discord 頻道裡收集的餐廳口袋名單</div>
-        </div>
-      </div>
-      <div class="header-actions">
-        <div class="lang-switch" aria-label="Language">
-          <button id="langZh" type="button">中文</button>
-          <button id="langJa" type="button">日本語</button>
-        </div>
-        <a class="nav-link" href="/map" data-i18n="mapLink">地圖</a>
-      </div>
-    </div>
-  </header>
-  <main>
-    <section class="intro">
-      <div>
-        <h2 class="intro-title" data-i18n="introTitle">今天想去哪裡吃？</h2>
-        <p class="intro-copy" data-i18n="introCopy">用店名、地區或料理類型快速翻找大家存下來的店。</p>
-      </div>
-      <div id="summary" class="count-pill"></div>
-    </section>
-    <div class="toolbar">
-      <input id="keyword" data-i18n-placeholder="searchPlaceholder" placeholder="搜尋店名、分類、地區、評論">
-      <select id="area"><option value="">全部地區</option></select>
-      <select id="category"><option value="">全部分類</option></select>
-    </div>
-    <div id="grid" class="grid"></div>
-  </main>
-
-  <script src="/static/js/public.js"></script>
+<body data-page="public">
+<a class="skip-link" href="#main">
+<span data-zh="跳至內容" data-ja="本文へ">跳至內容</span>
+</a>
+<header class="shell masthead">
+<a class="brand" href="/">
+<span class="stamp" aria-hidden="true">食</span>
+<div>
+<h1>
+<span data-zh="食事筆記" data-ja="食事ノート">食事筆記</span>
+</h1>
+<p class="brand-note">TC · <span data-zh="朋友的食事筆記" data-ja="友だちの食事ノート">朋友的食事筆記</span>
+</p>
+</div>
+</a>
+<nav class="navigation" aria-label="Navigation">
+<a class="nav-link" href="/" aria-current="page">
+<span data-zh="店家" data-ja="お店">店家</span>
+</a>
+<a class="nav-link" href="/map" >
+<span data-zh="地圖" data-ja="地図">地圖</span>
+</a>
+<div class="lang-switch" aria-label="Language">
+<button type="button" data-language="zh" lang="zh-Hant">中文</button>
+<button type="button" data-language="ja" lang="ja">日本語</button>
+</div>
+</nav>
+</header>
+<main id="main" class="shell">
+<section aria-labelledby="listTitle">
+<div class="section-head">
+<h2 id="listTitle">
+<span data-zh="收藏的店家" data-ja="保存したお店">收藏的店家</span>
+</h2>
+<p id="summary" class="status" role="status" aria-live="polite">
+</p>
+</div>
+<div class="toolbar">
+<label for="keyword">
+<span data-zh="搜尋" data-ja="検索">搜尋</span>
+<input id="keyword" type="search" data-placeholder-zh="店名、地區、朋友的筆記…" data-placeholder-ja="店名・エリア・友だちのメモ…" placeholder="店名、地區、朋友的筆記…">
+</label>
+<label for="area">
+<span data-zh="地區" data-ja="エリア">地區</span>
+<select id="area">
+<option value="">全部地區</option>
+</select>
+</label>
+<label for="category">
+<span data-zh="料理分類" data-ja="料理ジャンル">料理分類</span>
+<select id="category">
+<option value="">全部分類</option>
+</select>
+</label>
+</div>
+<div id="listState" class="state" role="status" aria-live="polite">
+</div>
+<div id="grid" class="shop-list">
+</div>
+</section>
+</main>
+<footer class="shell footer">
+<span data-zh="TC · 食事筆記" data-ja="TC · 食事ノート">TC · 食事筆記</span>
+</footer>
+<dialog id="shopDetail" data-testid="shop-detail" aria-labelledby="detailTitle">
+<div class="detail-top">
+<p>
+<span data-zh="店家筆記" data-ja="お店のノート">店家筆記</span>
+</p>
+<button id="closeDetail" type="button">
+<span data-zh="關閉" data-ja="閉じる">關閉</span>
+</button>
+</div>
+<div id="detailContent">
+<h2 id="detailTitle">
+<span data-zh="讀取中…" data-ja="読み込み中…">讀取中…</span>
+</h2>
+</div>
+</dialog>
+<script src="/static/js/notebook.js"></script>
+<script src="/static/js/public.js"></script>
 </body>
 </html>

@@ -1,118 +1,330 @@
-
 <!doctype html>
 <html lang="zh-Hant">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>食べログ Bot 管理後台</title>
-  <link rel="stylesheet" href="/static/css/admin.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>筆記工作台 · TC</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/admin.css">
 </head>
-<body>
-  <header>
-    <h1 data-i18n="adminTitle">食べログ Bot 管理後台</h1>
-    <div class="actions">
-      <div class="lang-switch" aria-label="Language">
-        <button id="adminLangZh" type="button">中文</button>
-        <button id="adminLangJa" type="button">日本語</button>
-      </div>
-      <a class="nav-link" href="/" data-i18n="publicPage">公開頁</a>
-      <a class="nav-link" href="/map" data-i18n="mapPage">地圖</a>
-      <button id="logoutButton" type="button" data-i18n="logout">登出</button>
-      <button id="importSheet" class="primary" data-i18n="importSheet">從 Google Sheet 匯入</button>
-      <button id="syncSheet" data-i18n="syncSheet">DB 同步到 Sheet</button>
-      <button id="reload" data-i18n="reload">重新整理</button>
-    </div>
-  </header>
-
-
-  <main>
-    <section class="sidebar">
-      <div class="toolbar">
-        <input id="keyword" data-i18n-placeholder="searchPlaceholder" placeholder="搜尋店名、分類、地區、評論">
-        <select id="area"><option value="">全部地區</option></select>
-        <select id="category"><option value="">全部分類</option></select>
-      </div>
-      <div id="count" class="status"></div>
-      <div id="restaurantList" class="restaurant-list"></div>
-    </section>
-
-    <section class="editor">
-      <div id="empty" class="empty" data-i18n="emptyEditor">從左邊選一間餐廳開始編輯。</div>
-      <form id="editorForm" hidden>
-        <div class="actions">
-          <button class="primary" type="submit" data-i18n="saveChanges">儲存修改</button>
-          <button class="danger" id="deleteRestaurant" type="button" data-i18n="deleteRestaurant">刪除餐廳</button>
-        </div>
-
-        <div class="form-grid">
-          <label><span data-i18n="name">店名</span>
-            <input id="name" required>
-          </label>
-          <label><span data-i18n="category">分類</span>
-            <input id="categoryInput" required>
-          </label>
-          <label><span data-i18n="area">地區</span>
-            <input id="areaInput">
-          </label>
-          <label><span data-i18n="recommendedBy">推薦者</span>
-            <input id="recommendedBy">
-          </label>
-          <label><span data-i18n="keywords">關鍵字，用逗號分隔</span>
-            <input id="keywordsInput">
-          </label>
-          <label><span data-i18n="lunchBudget">午餐價格</span>
-            <input id="lunchBudget" data-i18n-placeholder="lunchBudgetPlaceholder" placeholder="例：￥1,000～￥1,999">
-          </label>
-          <label><span data-i18n="dinnerBudget">晚餐價格</span>
-            <input id="dinnerBudget" data-i18n-placeholder="dinnerBudgetPlaceholder" placeholder="例：￥2,000～￥2,999">
-          </label>
-          <label><span data-i18n="lunchMin">午餐最低</span>
-            <input id="lunchMin" type="number" min="0" step="1">
-          </label>
-          <label><span data-i18n="lunchMax">午餐最高</span>
-            <input id="lunchMax" type="number" min="0" step="1">
-          </label>
-          <label><span data-i18n="dinnerMin">晚餐最低</span>
-            <input id="dinnerMin" type="number" min="0" step="1">
-          </label>
-          <label><span data-i18n="dinnerMax">晚餐最高</span>
-            <input id="dinnerMax" type="number" min="0" step="1">
-          </label>
-          <label class="full"><span data-i18n="businessHours">營業時間</span>
-            <textarea id="businessHours"></textarea>
-          </label>
-          <label class="full">食べログ URL
-            <input id="tabelogUrl">
-          </label>
-          <label class="full">Google Maps URL
-            <input id="googleMapsUrl">
-          </label>
-          <label class="full"><span data-i18n="imageUrl">圖片 URL</span>
-            <input id="imageUrl">
-          </label>
-          <label class="full"><span data-i18n="uploadImage">上傳圖片</span>
-            <div class="image-upload">
-              <input id="imageFile" type="file" accept="image/jpeg,image/png,image/webp,image/gif">
-              <button id="uploadImage" type="button" data-i18n="uploadImageButton">上傳圖片</button>
-              <img id="imagePreview" class="image-preview" alt="" hidden>
-            </div>
-          </label>
-          <label class="full"><span data-i18n="comments">評論</span>
-            <textarea id="comments"></textarea>
-          </label>
-        </div>
-
-        <label class="full"><span data-i18n="appendCommentTitle">追加評論</span>
-          <textarea id="newComment" data-i18n-placeholder="appendCommentPlaceholder" placeholder="輸入要追加的評論，不會覆蓋原本內容"></textarea>
-        </label>
-        <div class="actions" style="margin-top: 8px;">
-          <button id="appendComment" type="button" data-i18n="appendComment">追加評論</button>
-        </div>
-        <div id="message" class="message"></div>
-      </form>
-    </section>
-  </main>
-
-  <script src="/static/js/admin.js"></script>
+<body data-page="admin">
+<a class="skip-link" href="#main">
+<span data-zh="跳至內容" data-ja="本文へ">跳至內容</span>
+</a>
+<header class="shell masthead">
+<a class="brand" href="/">
+<span class="stamp" aria-hidden="true">食</span>
+<div>
+<h1>
+<span data-zh="筆記工作台" data-ja="ノート編集室">筆記工作台</span>
+</h1>
+<p class="brand-note">TC · <span data-zh="朋友的食事筆記" data-ja="友だちの食事ノート">朋友的食事筆記</span>
+</p>
+</div>
+</a>
+<nav class="navigation" aria-label="Navigation">
+<a class="nav-link" href="/" >
+<span data-zh="店家" data-ja="お店">店家</span>
+</a>
+<a class="nav-link" href="/map" >
+<span data-zh="地圖" data-ja="地図">地圖</span>
+</a>
+<div class="lang-switch" aria-label="Language">
+<button type="button" data-language="zh" lang="zh-Hant">中文</button>
+<button type="button" data-language="ja" lang="ja">日本語</button>
+</div>
+<button id="logoutButton" type="button">
+<span data-zh="登出" data-ja="ログアウト">登出</span>
+</button>
+</nav>
+</header>
+<main id="main" class="shell">
+<div class="section-head">
+<h2>
+<span data-zh="店家編輯" data-ja="お店を編集">店家編輯</span>
+</h2>
+<button id="reload" type="button">
+<span data-zh="重新讀取" data-ja="再読み込み">重新讀取</span>
+</button>
+</div>
+<div class="workbench">
+<section id="adminSidebar" class="sidebar" aria-labelledby="adminListTitle">
+<h2 id="adminListTitle">
+<span data-zh="店家清單" data-ja="お店のリスト">店家清單</span>
+</h2>
+<div class="toolbar">
+<label for="keyword">
+<span data-zh="搜尋" data-ja="検索">搜尋</span>
+<input id="keyword" type="search" data-placeholder-zh="店名、地區、朋友的筆記…" data-placeholder-ja="店名・エリア・友だちのメモ…" placeholder="店名、地區、朋友的筆記…">
+</label>
+<label for="area">
+<span data-zh="地區" data-ja="エリア">地區</span>
+<select id="area">
+<option value="">全部地區</option>
+</select>
+</label>
+<label for="category">
+<span data-zh="料理分類" data-ja="料理ジャンル">料理分類</span>
+<select id="category">
+<option value="">全部分類</option>
+</select>
+</label>
+</div>
+<p id="count" class="status" role="status" aria-live="polite">
+</p>
+<div id="adminListState" class="state" role="status" aria-live="polite">
+</div>
+<div id="restaurantList">
+</div>
+</section>
+<section id="editor" class="editor" aria-labelledby="editorTitle">
+<button id="backToList" type="button" class="back-button">
+<span data-zh="返回清單" data-ja="リストに戻る">返回清單</span>
+</button>
+<h2 id="editorTitle" tabindex="-1">
+<span data-zh="選擇店家" data-ja="お店を選択">選擇店家</span>
+</h2>
+<p id="empty" class="muted">
+<span data-zh="從清單選擇店家，即可編輯資料與閱讀朋友的筆記。" data-ja="リストからお店を選んで、情報を編集したりメモを読めます。">從清單選擇店家，即可編輯資料與閱讀朋友的筆記。</span>
+</p>
+<p id="message" role="status" aria-live="polite"></p>
+<form id="editorForm" hidden>
+<fieldset>
+<legend>
+<span data-zh="店家資料" data-ja="お店の情報">店家資料</span>
+</legend>
+<div class="form-grid">
+<label for="name">
+<span data-zh="店名（必填）" data-ja="店名（必須）">店名（必填）</span>
+<input id="name" required>
+</label>
+<label for="categoryInput">
+<span data-zh="料理分類（必填）" data-ja="料理ジャンル（必須）">料理分類（必填）</span>
+<input id="categoryInput" required>
+</label>
+<label for="areaInput">
+<span data-zh="地區" data-ja="エリア">地區</span>
+<input id="areaInput" >
+</label>
+<label for="recommendedBy">
+<span data-zh="推薦者" data-ja="推薦者">推薦者</span>
+<input id="recommendedBy" >
+</label>
+<label for="keywordsInput">
+<span data-zh="標籤（逗號分隔）" data-ja="タグ（カンマ区切り）">標籤（逗號分隔）</span>
+<input id="keywordsInput" >
+</label>
+</div>
+</fieldset>
+<fieldset>
+<legend>
+<span data-zh="預算與時間" data-ja="予算と営業時間">預算與時間</span>
+</legend>
+<p class="muted budget-help">
+<span data-zh="預算以日圓計。上方文字顯示於店家筆記；最低／最高為結構化價格。空白表示沿用既有價格。例：￥1,000～￥1,999。" data-ja="予算は日本円。表示用テキストと数値の下限・上限を別に記録します。空欄は既存の価格を維持します。例：￥1,000～￥1,999。">預算以日圓計。上方文字顯示於店家筆記；最低／最高為結構化價格。空白表示沿用既有價格。例：￥1,000～￥1,999。</span>
+</p>
+<div class="form-grid prices-grid">
+<label for="lunchBudget">
+<span data-zh="午餐預算" data-ja="ランチ予算">午餐預算</span>
+<input id="lunchBudget" >
+</label>
+<label for="dinnerBudget">
+<span data-zh="晚餐預算" data-ja="ディナー予算">晚餐預算</span>
+<input id="dinnerBudget" >
+</label>
+<label for="lunchMin">
+<span data-zh="午餐最低" data-ja="ランチ下限">午餐最低</span>
+<input id="lunchMin" type="number" min="0" step="1">
+</label>
+<label for="lunchMax">
+<span data-zh="午餐最高" data-ja="ランチ上限">午餐最高</span>
+<input id="lunchMax" type="number" min="0" step="1">
+</label>
+<label for="dinnerMin">
+<span data-zh="晚餐最低" data-ja="ディナー下限">晚餐最低</span>
+<input id="dinnerMin" type="number" min="0" step="1">
+</label>
+<label for="dinnerMax">
+<span data-zh="晚餐最高" data-ja="ディナー上限">晚餐最高</span>
+<input id="dinnerMax" type="number" min="0" step="1">
+</label>
+</div>
+<label for="businessHours">
+<span data-zh="營業時間（保留換行）" data-ja="営業時間（改行可）">營業時間（保留換行）</span>
+<textarea id="businessHours" >
+</textarea>
+</label>
+</fieldset>
+<fieldset>
+<legend>
+<span data-zh="連結與照片" data-ja="リンクと写真">連結與照片</span>
+</legend>
+<div class="form-grid">
+<label for="tabelogUrl">
+<span data-zh="食べログ URL" data-ja="食べログ URL">食べログ URL</span>
+<input id="tabelogUrl" type="url">
+</label>
+<label for="googleMapsUrl">
+<span data-zh="Google Maps URL" data-ja="Google Maps URL">Google Maps URL</span>
+<input id="googleMapsUrl" type="url">
+</label>
+</div>
+<label for="imageUrl">
+<span data-zh="圖片 URL" data-ja="画像 URL">圖片 URL</span>
+<input id="imageUrl" >
+</label>
+<div class="image-tools">
+<label for="imageFile">
+<span data-zh="上傳照片（最大 5 MB）" data-ja="写真をアップロード（最大 5 MB）">上傳照片（最大 5 MB）</span>
+<input id="imageFile" type="file" accept="image/jpeg,image/png,image/webp,image/gif">
+</label>
+<div class="actions">
+<button id="uploadImage" type="button">
+<span data-zh="上傳照片" data-ja="アップロード">上傳照片</span>
+</button>
+<button id="removeImage" type="button" class="danger">
+<span data-zh="移除照片" data-ja="写真を削除">移除照片</span>
+</button>
+</div>
+<img id="imagePreview" class="image-preview" width="480" height="360" alt="店家照片" hidden>
+</div>
+</fieldset>
+<fieldset>
+<legend>
+<span data-zh="朋友的筆記" data-ja="友だちのメモ">朋友的筆記</span>
+</legend>
+<div id="commentItems" class="comments-list">
+</div>
+<div id="legacySection" class="legacy-section" hidden>
+<label for="comments">
+<span data-zh="舊版筆記／唯讀" data-ja="旧形式のメモ／読み取り専用">舊版筆記／唯讀</span>
+<textarea id="comments" readonly>
+</textarea>
+</label>
+<p class="muted">
+<span data-zh="儲存時保留原文；新增筆記請使用下方欄位。" data-ja="保存時に原文を維持します。新しいメモは下の欄へ。">儲存時保留原文；新增筆記請使用下方欄位。</span>
+</p>
+</div>
+<label for="newComment">
+<span data-zh="追加筆記" data-ja="メモを追加">追加筆記</span>
+<textarea id="newComment" >
+</textarea>
+</label>
+<button id="appendComment" type="button">
+<span data-zh="追加筆記" data-ja="メモを追加">追加筆記</span>
+</button>
+</fieldset>
+<div class="editor-save">
+<button class="primary" type="submit">
+<span data-zh="儲存修改" data-ja="変更を保存">儲存修改</span>
+</button>
+<button id="deleteRestaurant" class="danger" type="button">
+<span data-zh="刪除此店家" data-ja="このお店を削除">刪除此店家</span>
+</button>
+</div>
+</form>
+</section>
+</div>
+<section class="maintenance" aria-labelledby="maintenanceTitle">
+<h2 id="maintenanceTitle">
+<span data-zh="資料維護／批次操作" data-ja="データ管理／一括操作">資料維護／批次操作</span>
+</h2>
+<p class="muted">
+<span data-zh="這些操作會影響多筆資料或遠端工作表，執行前請確認方向與備份。" data-ja="複数のデータやリモートシートに影響します。方向とバックアップを確認してください。">這些操作會影響多筆資料或遠端工作表，執行前請確認方向與備份。</span>
+</p>
+<p id="maintenanceStatus" role="status" aria-live="polite"></p>
+<div class="maintenance-row">
+<div>
+<h3>
+<span data-zh="Google Sheet → 本機資料庫（匯入）" data-ja="Google Sheet → ローカル DB（取込）">Google Sheet → 本機資料庫（匯入）</span>
+</h3>
+<p class="muted">
+<span data-zh="相同 ID 會以 Sheet 內容更新，請先備份。" data-ja="同じ ID を Sheet の内容で更新します。先にバックアップしてください。">相同 ID 會以 Sheet 內容更新，請先備份。</span>
+</p>
+</div>
+<button id="importSheet" type="button">
+<span data-zh="匯入 Sheet" data-ja="Sheet 取込">匯入 Sheet</span>
+</button>
+</div>
+<div class="maintenance-row">
+<div>
+<h3>
+<span data-zh="本機資料庫 → Google Sheet（覆寫）" data-ja="ローカル DB → Google Sheet（上書き）">本機資料庫 → Google Sheet（覆寫）</span>
+</h3>
+<p class="muted">
+<span data-zh="用目前資料庫覆寫遠端工作表。" data-ja="現在の DB でリモートのシートを上書きします。">用目前資料庫覆寫遠端工作表。</span>
+</p>
+</div>
+<button id="syncSheet" type="button">
+<span data-zh="覆寫 Sheet" data-ja="Sheet 上書き">覆寫 Sheet</span>
+</button>
+</div>
+<div class="maintenance-row">
+<div>
+<h3>
+<span data-zh="本機資料庫：整理地區／分類" data-ja="ローカル DB：エリア・分類を整理">本機資料庫：整理地區／分類</span>
+</h3>
+<p class="muted">
+<span data-zh="統一現有店家的地區與分類。" data-ja="既存のお店のエリア・分類を統一します。">統一現有店家的地區與分類。</span>
+</p>
+</div>
+<button id="cleanupTaxonomy" type="button">
+<span data-zh="整理分類" data-ja="分類を整理">整理分類</span>
+</button>
+</div>
+<div class="maintenance-row">
+<div>
+<h3>
+<span data-zh="Tabelog → 資料庫：補價格" data-ja="Tabelog → DB：価格を補完">Tabelog → 資料庫：補價格</span>
+</h3>
+<p class="muted">
+<span data-zh="每次最多檢查 5 間缺少價格的店。" data-ja="価格のないお店を一度に最大 5 件確認。">每次最多檢查 5 間缺少價格的店。</span>
+</p>
+</div>
+<button id="enrichPrices" type="button">
+<span data-zh="補抓價格" data-ja="価格を補完">補抓價格</span>
+</button>
+</div>
+<div class="maintenance-row">
+<div>
+<h3>
+<span data-zh="Tabelog → 資料庫：補營業時間" data-ja="Tabelog → DB：営業時間を補完">Tabelog → 資料庫：補營業時間</span>
+</h3>
+<p class="muted">
+<span data-zh="每次最多檢查 5 間缺少營業時間的店。" data-ja="営業時間のないお店を一度に最大 5 件確認。">每次最多檢查 5 間缺少營業時間的店。</span>
+</p>
+</div>
+<button id="enrichHours" type="button">
+<span data-zh="補抓時間" data-ja="時間を補完">補抓時間</span>
+</button>
+</div>
+<div class="backup-section">
+<div class="section-head">
+<h3>
+<span data-zh="資料庫 → 本機備份" data-ja="DB → ローカルバックアップ">資料庫 → 本機備份</span>
+</h3>
+<div class="actions">
+<button id="createBackup" type="button">
+<span data-zh="建立備份" data-ja="バックアップ作成">建立備份</span>
+</button>
+<button id="listBackups" type="button">
+<span data-zh="讀取備份清單" data-ja="バックアップ一覧">讀取備份清單</span>
+</button>
+</div>
+</div>
+<div id="backupList" aria-live="polite">
+</div>
+</div>
+</section>
+</main>
+<footer class="shell footer">
+<span data-zh="TC · 食事筆記" data-ja="TC · 食事ノート">TC · 食事筆記</span>
+<a class="nav-link" href="/admin">
+<span data-zh="管理筆記" data-ja="ノートを管理">管理筆記</span>
+</a>
+</footer>
+<script src="/static/js/notebook.js"></script>
+<script src="/static/js/admin.js"></script>
 </body>
 </html>

@@ -257,7 +257,7 @@ class CallSiteTests(unittest.TestCase):
     def setUpClass(cls):
         cls.stack = ExitStack()
         cls.addClassCleanup(cls.stack.close)
-        directory = cls.stack.enter_context(tempfile.TemporaryDirectory(dir=ROOT))
+        directory = cls.stack.enter_context(tempfile.TemporaryDirectory())
         cls.stack.enter_context(patch.dict(os.environ, {
             "DB_PATH": str(Path(directory) / "test.sqlite3"),
             "DISCORD_TOKEN": "offline-test-token", "OPENAI_MODEL": "gpt-6-luna",

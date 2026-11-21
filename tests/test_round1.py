@@ -26,7 +26,7 @@ PRIVATE = {"created_by", "source_channel_id", "source_message_id"}
 class Round1Tests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.temp = tempfile.TemporaryDirectory(dir=ROOT)
+        cls.temp = tempfile.TemporaryDirectory()
         cls.root = Path(cls.temp.name)
         cls.env = patch.dict(os.environ, {
             "DB_PATH": str(cls.root / "startup.sqlite3"),
@@ -38,6 +38,8 @@ class Round1Tests(unittest.TestCase):
             "OPENAI_API_KEY": "offline-test-key",
         })
         cls.env.start()
+        cls.dotenv = patch("dotenv.load_dotenv")
+        cls.dotenv.start()
         # Imports register commands but do not call client.run or setup_hook.
         cls.previous_modules = {name: sys.modules.pop(name, None) for name in ("bot", "admin_app")}
         cls.admin = importlib.import_module("admin_app")
@@ -51,6 +53,7 @@ class Round1Tests(unittest.TestCase):
             if module is not None:
                 sys.modules[name] = module
         cls.env.stop()
+        cls.dotenv.stop()
         cls.temp.cleanup()
 
     def setUp(self):
@@ -131,6 +134,21 @@ class Round1Tests(unittest.TestCase):
                 interaction.response.send_message.reset_mock()
                 asyncio.run(self.bot.edit_restaurant.callback(interaction, self.id, **{field: "javascript:alert(1)"}))
                 self.assertTrue(interaction.response.send_message.call_args.kwargs["ephemeral"])
+
+    def test_discord_edit_preserves_omitted_comments_and_accepts_exact_text(self):
+        interaction = SimpleNamespace(guild=object(), user=SimpleNamespace(
+            guild_permissions=SimpleNamespace(manage_guild=True, administrator=False)),
+            response=SimpleNamespace(send_message=AsyncMock()))
+        original = self.db.get(self.id).comments
+        original_items = self.db.comments_for(self.id)
+        with patch.object(self.bot, "db", self.db), patch.object(
+                self.bot, "reject_disallowed_interaction_channel", AsyncMock(return_value=False)):
+            for value in (None, '  更新原文\n\n  ', ''):
+                with self.subTest(comments=value):
+                    asyncio.run(self.bot.edit_restaurant.callback(
+                        interaction, self.id, name='修改後餐廳', comments=value))
+                    self.assertEqual(self.db.get(self.id).comments, original if value is None else value)
+                    self.assertEqual(self.db.comments_for(self.id), original_items)
 
     def test_docs_and_public_navigation(self):
         for url in ("/docs", "/redoc", "/openapi.json"):

@@ -1823,7 +1823,7 @@ async def edit_restaurant(
         area=area if area is not None else restaurant.area,
         tabelog_url=tabelog_url if tabelog_url is not None else restaurant.tabelog_url,
         google_maps_url=google_maps_url if google_maps_url is not None else restaurant.google_maps_url,
-        comments=comments if comments is not None else restaurant.comments,
+        comments=comments,
         keywords=parse_keywords(keywords) if keywords is not None else restaurant.keywords,
         image_url=restaurant.image_url,
         business_hours_text=restaurant.business_hours_text,

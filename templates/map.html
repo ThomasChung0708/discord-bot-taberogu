@@ -1,42 +1,86 @@
-
 <!doctype html>
 <html lang="zh-Hant">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>共享美食地圖</title>
-  <link rel="stylesheet" href="/static/css/map.css">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>食事地圖 · TC</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/map.css">
 </head>
-<body>
-  <header>
-    <div class="header-inner">
-      <div class="brand">
-        <div class="brand-mark">地</div>
-        <div>
-          <h1>共享美食地圖</h1>
-          <div class="subtitle">使用 Google My Maps 顯示目前共享地圖</div>
-        </div>
-      </div>
-      <div class="actions">
-        <a class="nav-link" href="/">清單</a>
-      </div>
-    </div>
-  </header>
-  <main>
-    <div id="mapContainer" class="map-frame">
-      <iframe
-        id="myMapsFrame"
-        src="__MY_MAPS_EMBED_URL__"
-        loading="lazy"
-        referrerpolicy="no-referrer-when-downgrade"
-        allowfullscreen
-      ></iframe>
-    </div>
-    <div id="emptyMap" class="empty" hidden>
-      <strong>還沒有設定 My Maps 網址。</strong>
-      請在 VM 的 <code>.env</code> 裡設定 <code>GOOGLE_MY_MAPS_URL</code>，再重啟網站服務。
-    </div>
-  </main>
-  <script src="/static/js/map.js"></script>
+<body data-page="map">
+<a class="skip-link" href="#main">
+<span data-zh="跳至內容" data-ja="本文へ">跳至內容</span>
+</a>
+<header class="shell masthead">
+<a class="brand" href="/">
+<span class="stamp" aria-hidden="true">食</span>
+<div>
+<h1>
+<span data-zh="食事地圖" data-ja="食事マップ">食事地圖</span>
+</h1>
+<p class="brand-note">TC · <span data-zh="朋友的食事筆記" data-ja="友だちの食事ノート">朋友的食事筆記</span>
+</p>
+</div>
+</a>
+<nav class="navigation" aria-label="Navigation">
+<a class="nav-link" href="/" >
+<span data-zh="店家" data-ja="お店">店家</span>
+</a>
+<a class="nav-link" href="/map" aria-current="page">
+<span data-zh="地圖" data-ja="地図">地圖</span>
+</a>
+<div class="lang-switch" aria-label="Language">
+<button type="button" data-language="zh" lang="zh-Hant">中文</button>
+<button type="button" data-language="ja" lang="ja">日本語</button>
+</div>
+</nav>
+</header>
+<main id="main" class="shell">
+<div class="section-head">
+<h2>
+<span data-zh="地圖與店家索引" data-ja="地図とお店の索引">地圖與店家索引</span>
+</h2>
+</div>
+<p class="map-note muted">
+<span data-zh="共享地圖搭配收藏清單；選取店家後可在 Google Maps 確認位置。" data-ja="共有地図と保存リスト。お店の場所は Google Maps で確認できます。">共享地圖搭配收藏清單；選取店家後可在 Google Maps 確認位置。</span>
+</p>
+<a class="button-link map-jump" href="#mapIndexTitle">
+<span data-zh="跳至店家索引" data-ja="お店の索引へ">跳至店家索引</span>
+</a>
+<div class="map-layout">
+<section aria-label="Google My Maps">
+<div id="selectedShop" class="selected-shop" tabindex="-1" hidden aria-live="polite">
+</div>
+<div id="mapContainer" class="map-frame">
+<iframe id="myMapsFrame" title="Google My Maps" src="__MY_MAPS_EMBED_URL__" loading="lazy" referrerpolicy="no-referrer-when-downgrade" allowfullscreen>
+</iframe>
+</div>
+<div id="mapHelp" class="map-help">
+</div>
+<p id="emptyMap" class="state" hidden>
+<span data-zh="共享地圖尚未提供，仍可從店家索引開啟 Google Maps。" data-ja="共有地図は準備中です。お店の索引から Google Maps を開けます。">共享地圖尚未提供，仍可從店家索引開啟 Google Maps。</span>
+</p>
+</section>
+<section class="map-index" aria-labelledby="mapIndexTitle">
+<h2 id="mapIndexTitle" tabindex="-1">
+<span data-zh="店家索引" data-ja="お店の索引">店家索引</span>
+</h2>
+<label for="mapKeyword">
+<span data-zh="搜尋店家" data-ja="お店を検索">搜尋店家</span>
+<input id="mapKeyword" type="search">
+</label>
+<div id="mapState" class="status" role="status" aria-live="polite">
+</div>
+<div id="mapList">
+</div>
+</section>
+</div>
+</main>
+<footer class="shell footer">
+<span data-zh="TC · 食事筆記" data-ja="TC · 食事ノート">TC · 食事筆記</span>
+</footer>
+<script src="/static/js/notebook.js"></script>
+<script src="/static/js/map.js"></script>
 </body>
 </html>

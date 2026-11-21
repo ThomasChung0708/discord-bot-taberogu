@@ -2,6 +2,7 @@
 
 from contextlib import ExitStack
 from html.parser import HTMLParser
+import hashlib
 import importlib
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from urllib.parse import urlsplit
 
 from fastapi.testclient import TestClient
 
@@ -23,12 +25,15 @@ class AssetReferences(HTMLParser):
         super().__init__()
         self.styles = []
         self.scripts = []
+        self.icons = []
         self.feed(html)
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag == "link" and attrs.get("rel") == "stylesheet":
             self.styles.append(attrs["href"])
+        elif tag == "link" and attrs.get("rel") == "icon":
+            self.icons.append(attrs["href"])
         elif tag == "script" and "src" in attrs:
             self.scripts.append(attrs["src"])
 
@@ -38,7 +43,7 @@ class Round3SplitTests(unittest.TestCase):
     def setUpClass(cls):
         cls.stack = ExitStack()
         cls.addClassCleanup(cls.stack.close)
-        cls.root = Path(cls.stack.enter_context(tempfile.TemporaryDirectory(dir=ROOT)))
+        cls.root = Path(cls.stack.enter_context(tempfile.TemporaryDirectory()))
         cls.stack.enter_context(patch.dict(os.environ, {
             "DB_PATH": str(cls.root / "startup.sqlite3"),
             "UPLOAD_DIR": str(cls.root / "uploads"),
@@ -90,11 +95,15 @@ class Round3SplitTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.headers["content-type"], "text/html; charset=utf-8")
         references = AssetReferences(response.text)
-        self.assertEqual(references.styles, [f"/static/css/{page}.css"])
-        self.assertEqual(references.scripts, [f"/static/js/{page}.js"])
+        self.assertEqual([urlsplit(url).path for url in references.styles], ["/static/css/tokens.css", f"/static/css/{page}.css"])
+        self.assertEqual([urlsplit(url).path for url in references.scripts], ["/static/js/notebook.js", f"/static/js/{page}.js"])
+        self.assertEqual([urlsplit(url).path for url in references.icons], ["/static/favicon.svg"])
+        for asset in references.styles + references.scripts + references.icons:
+            content = (ROOT / urlsplit(asset).path.lstrip("/")).read_bytes()
+            self.assertEqual(urlsplit(asset).query, "v=" + hashlib.sha256(content).hexdigest()[:8])
         self.assertNotIn("<style>", response.text)
         self.assertNotIn("<script>", response.text)
-        script = f'<script src="/static/js/{page}.js"></script>'
+        script = f'<script src="{references.scripts[-1]}"></script>'
         self.assertIn(script, response.text)
         self.assertLess(response.text.index("</main>"), response.text.index(script))
         self.assertLess(response.text.index(script), response.text.index("</body>"))
@@ -126,20 +135,28 @@ class Round3SplitTests(unittest.TestCase):
         assets = set()
         for page in pages:
             references = AssetReferences(page.text)
-            assets.update(references.styles + references.scripts)
-        self.assertEqual(len(assets), 8)
+            assets.update(references.styles + references.scripts + references.icons)
+        self.assertEqual(len(assets), 11)
         for url in sorted(assets):
             with self.subTest(url=url):
                 response = self.client.get(url)
                 self.assertEqual(response.status_code, 200)
                 mime = response.headers["content-type"].split(";")[0]
-                if url.endswith(".css"):
+                path = urlsplit(url).path
+                if path.endswith(".css"):
                     self.assertEqual(mime, "text/css")
+                elif path.endswith(".svg"):
+                    self.assertEqual(mime, "image/svg+xml")
                 else:
                     # Python/OS MIME databases use either registered JavaScript type.
                     self.assertIn(mime, {"text/javascript", "application/javascript"})
                 self.assertEqual(response.headers["x-content-type-options"], "nosniff")
-                self.assertEqual(response.content, (ROOT / url.lstrip("/")).read_bytes())
+                self.assertEqual(response.headers["cache-control"], "no-cache")
+                self.assertEqual(response.content, (ROOT / path.lstrip("/")).read_bytes())
+                cached = self.client.get(url, headers={"If-None-Match": response.headers["etag"]})
+                self.assertEqual(cached.status_code, 304)
+                self.assertEqual(cached.headers["cache-control"], "no-cache")
+                self.assertEqual(cached.headers["x-content-type-options"], "nosniff")
 
     def test_map_embed_url_substitution(self):
         for configured, expected in [

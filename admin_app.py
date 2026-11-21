@@ -16,6 +16,7 @@ SQLite 資料庫。它的目標不是取代 Discord 操作，而是補上管理�
 """
 
 import os
+import re
 import hashlib
 import hmac
 import ipaddress
@@ -32,7 +33,7 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, FastAPI, Request, Response
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
@@ -100,6 +101,8 @@ async def uploads_nosniff(request: Request, call_next):
     response = await call_next(request)
     if request.url.path.startswith(("/uploads/", "/static/")):
         response.headers["X-Content-Type-Options"] = "nosniff"
+    if request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
     return response
 
 
@@ -113,7 +116,7 @@ class RestaurantPayload(BaseModel):
     google_maps_url: str | None = None
     image_url: str | None = None
     recommended_by: str | None = None
-    comments: str = ""
+    comments: str | None = None
     keywords: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     lunch_budget_text: str | None = None
@@ -157,7 +160,9 @@ def comment_to_dict(comment, *, internal: bool = False) -> dict:
         "created_at": comment.created_at,
         "source_message_id": comment.source_message_id,
     }
-    return result if internal else public_fields(result)
+    if internal:
+        return result
+    return public_fields(result)
 
 
 def restaurant_to_dict(restaurant: Restaurant, *, internal: bool = False) -> dict:
@@ -190,7 +195,13 @@ def restaurant_to_dict(restaurant: Restaurant, *, internal: bool = False) -> dic
         "business_hours_text": restaurant.business_hours_text,
         "business_hours_updated_at": restaurant.business_hours_updated_at,
     }
-    return result if internal else public_fields(result)
+    if internal:
+        return result
+    public = public_fields(result)
+    # append_comment historically mirrors creator metadata into generated legacy headers.
+    # Only the public projection redacts that metadata; DB/admin keep the exact original.
+    public["comments"] = re.sub(r"(?m)^追加評論（[^\r\n]*）：", "追加評論：", restaurant.comments)
+    return public
 
 
 def public_fields(data: dict) -> dict:
@@ -301,6 +312,12 @@ def index() -> str:
     """公開只讀頁。"""
 
     return PUBLIC_HTML
+
+
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon() -> RedirectResponse:
+    """Public stamp favicon, including browsers requesting the conventional path."""
+    return RedirectResponse("/static/favicon.svg", headers={"X-Content-Type-Options": "nosniff"})
 
 
 @app.get("/map", response_class=HTMLResponse)
@@ -784,13 +801,21 @@ def my_maps_embed_url(url: str) -> str:
     return "https://www.google.com/maps/d/embed?" + urlencode({"mid": mid, "ehbc": "2E312F"})
 
 
-ADMIN_LOGIN_HTML = (BASE_DIR / "templates" / "login.html").read_text(encoding="utf-8")
+def load_html_template(name: str) -> str:
+    """Version local asset references by content when templates load at import time."""
+
+    html = (BASE_DIR / "templates" / name).read_text(encoding="utf-8")
+
+    def version_asset(match: re.Match) -> str:
+        prefix, url, quote = match.groups()
+        content = (BASE_DIR / url.lstrip("/")).read_bytes()
+        version = hashlib.sha256(content).hexdigest()[:8]
+        return f"{prefix}{url}?v={version}{quote}"
+
+    return re.sub(r'''(\b(?:href|src)=["'])(/static/[^"'?#]+)(["'])''', version_asset, html)
 
 
-PUBLIC_HTML = (BASE_DIR / "templates" / "public.html").read_text(encoding="utf-8")
-
-
-MAP_HTML = (BASE_DIR / "templates" / "map.html").read_text(encoding="utf-8")
-
-
-ADMIN_HTML = (BASE_DIR / "templates" / "admin.html").read_text(encoding="utf-8")
+ADMIN_LOGIN_HTML = load_html_template("login.html")
+PUBLIC_HTML = load_html_template("public.html")
+MAP_HTML = load_html_template("map.html")
+ADMIN_HTML = load_html_template("admin.html")

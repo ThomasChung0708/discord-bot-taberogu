@@ -1,692 +1,186 @@
-
-    function safeUrl(value) {
-      const url = String(value || "").trim();
-      if (!/^https?:\/\//i.test(url) || /[\s\x00-\x1f\x7f\\]/.test(url)) return "";
-      try {
-        const parsed = new URL(url);
-        return ["http:", "https:"].includes(parsed.protocol) && parsed.hostname ? url : "";
-      } catch { return ""; }
-    }
-
-    function safeImageUrl(value) {
-      const url = String(value || "").trim();
-      if (/^\/uploads\/restaurants\/[A-Za-z0-9_-][A-Za-z0-9_.-]*$/.test(url) && !url.includes("..")) return url;
-      return safeUrl(url);
-    }
-
-    const translations = {
-      zh: {
-        adminTitle: "食べログ Bot 管理後台",
-        logout: "登出",
-        publicPage: "公開頁",
-        mapPage: "地圖",
-        importSheet: "從 Google Sheet 匯入",
-        syncSheet: "DB 同步到 Sheet",
-        reload: "重新整理",
-        createBackup: "立即備份 DB",
-        cleanupTaxonomy: "整理地區/分類",
-        enrichPrices: "補抓價格",
-        enrichHours: "補抓營業時間",
-        searchPlaceholder: "搜尋店名、分類、地區、評論",
-        allAreas: "全部地區",
-        allCategories: "全部分類",
-        emptyEditor: "從左邊選一間餐廳開始編輯。",
-        saveChanges: "儲存修改",
-        deleteRestaurant: "刪除餐廳",
-        name: "店名",
-        category: "分類",
-        area: "地區",
-        recommendedBy: "推薦者",
-        keywords: "關鍵字，用逗號分隔",
-        lunchBudget: "午餐價格",
-        dinnerBudget: "晚餐價格",
-        lunchBudgetPlaceholder: "例：￥1,000～￥1,999",
-        dinnerBudgetPlaceholder: "例：￥2,000～￥2,999",
-        lunchMin: "午餐最低",
-        lunchMax: "午餐最高",
-        dinnerMin: "晚餐最低",
-        dinnerMax: "晚餐最高",
-        businessHours: "營業時間",
-        imageUrl: "圖片 URL",
-        uploadImage: "上傳圖片",
-        uploadImageButton: "上傳圖片",
-        uploadingImage: "上傳中...",
-        comments: "評論",
-        appendCommentTitle: "追加評論",
-        appendCommentPlaceholder: "輸入要追加的評論，不會覆蓋原本內容",
-        appendComment: "追加評論",
-        count: (total) => `目前顯示 ${total} 間餐廳，ID 由小到大排列`,
-        prev: "上一頁",
-        next: "下一頁",
-        noComments: "目前沒有獨立評論紀錄。",
-        saveFailed: "儲存失敗，請確認欄位內容。",
-        saved: "已儲存修改。",
-        appendFailed: "追加評論失敗。",
-        appended: "已追加評論。",
-        chooseImage: "請先選擇圖片。",
-        imageUploaded: "已上傳圖片。",
-        imageUploadFailed: "圖片上傳失敗。",
-        cleanupConfirm: "要把既有資料的地區與分類整理成統一格式嗎？",
-        cleaning: "整理中...",
-        cleanupFailed: "整理失敗",
-        cleanupDone: (count) => `已整理 ${count} 筆餐廳`,
-        enrichConfirm: "要從食べログ慢慢補抓最多 5 筆缺少的價格嗎？",
-        enriching: "補抓中...",
-        enrichFailed: "補抓價格失敗",
-        enrichDone: (updated, checked) => `已檢查 ${checked} 筆，更新 ${updated} 筆價格。`,
-        enrichHoursConfirm: "要從食べログ慢慢補抓最多 5 筆缺少的營業時間嗎？",
-        enrichingHours: "補抓中...",
-        enrichHoursFailed: "補抓營業時間失敗",
-        enrichHoursDone: (updated, checked) => `已檢查 ${checked} 筆，更新 ${updated} 筆營業時間。`,
-        backupConfirm: "要立即建立一份 SQLite 備份嗎？",
-        backingUp: "備份中...",
-        backupFailed: "備份失敗",
-        backupDone: (filename) => `已建立備份：${filename}`,
-        deleteConfirm: "確定要刪除這間餐廳嗎？這個動作不能復原。",
-        deleteFailed: "刪除失敗。",
-        importConfirm: "要把 Google Sheet 的資料匯入到本機資料庫嗎？同 ID 的餐廳會被 Sheet 內容更新。",
-        importing: "匯入中...",
-        importFailed: "匯入失敗",
-        importDone: (imported, skipped) => `已從 Google Sheet 匯入 ${imported} 筆，略過 ${skipped} 筆。`,
-        syncConfirm: "這會用目前資料庫內容覆蓋 Google Sheet。確定要繼續嗎？",
-        syncing: "同步中...",
-        syncFailed: "同步失敗",
-        syncDone: (count, verified, maxId, worksheet) =>
-          `已同步 ${count} 筆餐廳到 Google Sheet。\nSheet 分頁：${worksheet}\n讀回確認：${verified} 筆 / 最大 ID：${maxId ?? "-"}`,
-      },
-      ja: {
-        adminTitle: "食べログ Bot 管理画面",
-        logout: "ログアウト",
-        publicPage: "公開ページ",
-        mapPage: "地図",
-        importSheet: "Google Sheet から取り込み",
-        syncSheet: "DB を Sheet に同期",
-        reload: "再読み込み",
-        createBackup: "DB を今すぐバックアップ",
-        cleanupTaxonomy: "エリア/分類を整理",
-        enrichPrices: "価格を補完",
-        enrichHours: "営業時間を補完",
-        searchPlaceholder: "店名・分類・エリア・コメントを検索",
-        allAreas: "すべてのエリア",
-        allCategories: "すべての分類",
-        emptyEditor: "左側からレストランを選択して編集を開始します。",
-        saveChanges: "変更を保存",
-        deleteRestaurant: "レストランを削除",
-        name: "店名",
-        category: "分類",
-        area: "エリア",
-        recommendedBy: "推薦者",
-        keywords: "キーワード（カンマ区切り）",
-        lunchBudget: "ランチ価格",
-        dinnerBudget: "ディナー価格",
-        lunchBudgetPlaceholder: "例：￥1,000～￥1,999",
-        dinnerBudgetPlaceholder: "例：￥2,000～￥2,999",
-        lunchMin: "ランチ最低額",
-        lunchMax: "ランチ最高額",
-        dinnerMin: "ディナー最低額",
-        dinnerMax: "ディナー最高額",
-        businessHours: "営業時間",
-        imageUrl: "画像 URL",
-        uploadImage: "画像をアップロード",
-        uploadImageButton: "画像をアップロード",
-        uploadingImage: "アップロード中...",
-        comments: "コメント",
-        appendCommentTitle: "コメントを追加",
-        appendCommentPlaceholder: "追加するコメントを入力します。既存の内容は上書きしません",
-        appendComment: "コメントを追加",
-        count: (total) => `${total} 件のレストランを表示中（ID 昇順）`,
-        prev: "前へ",
-        next: "次へ",
-        noComments: "独立したコメント記録はまだありません。",
-        saveFailed: "保存に失敗しました。入力内容を確認してください。",
-        saved: "変更を保存しました。",
-        appendFailed: "コメントの追加に失敗しました。",
-        appended: "コメントを追加しました。",
-        chooseImage: "先に画像を選択してください。",
-        imageUploaded: "画像をアップロードしました。",
-        imageUploadFailed: "画像のアップロードに失敗しました。",
-        cleanupConfirm: "既存データのエリアと分類を統一形式に整理しますか？",
-        cleaning: "整理中...",
-        cleanupFailed: "整理に失敗しました",
-        cleanupDone: (count) => `${count} 件のレストランを整理しました`,
-        enrichConfirm: "食べログから価格未入力の店を最大 5 件補完しますか？",
-        enriching: "補完中...",
-        enrichFailed: "価格補完に失敗しました",
-        enrichDone: (updated, checked) => `${checked} 件を確認し、${updated} 件の価格を更新しました。`,
-        enrichHoursConfirm: "食べログから営業時間未入力の店を最大 5 件補完しますか？",
-        enrichingHours: "補完中...",
-        enrichHoursFailed: "営業時間の補完に失敗しました",
-        enrichHoursDone: (updated, checked) => `${checked} 件を確認し、${updated} 件の営業時間を更新しました。`,
-        backupConfirm: "SQLite バックアップを今すぐ作成しますか？",
-        backingUp: "バックアップ中...",
-        backupFailed: "バックアップに失敗しました",
-        backupDone: (filename) => `バックアップを作成しました：${filename}`,
-        deleteConfirm: "このレストランを削除しますか？この操作は元に戻せません。",
-        deleteFailed: "削除に失敗しました。",
-        importConfirm: "Google Sheet のデータをローカル DB に取り込みますか？同じ ID のレストランは Sheet の内容で更新されます。",
-        importing: "取り込み中...",
-        importFailed: "取り込みに失敗しました",
-        importDone: (imported, skipped) => `Google Sheet から ${imported} 件取り込み、${skipped} 件スキップしました。`,
-        syncConfirm: "現在の DB 内容で Google Sheet を上書きします。続行しますか？",
-        syncing: "同期中...",
-        syncFailed: "同期に失敗しました",
-        syncDone: (count, verified, maxId, worksheet) =>
-          `${count} 件のレストランを Google Sheet に同期しました。\nシート：${worksheet}\n読み戻し確認：${verified} 件 / 最大 ID：${maxId ?? "-"}`,
+(() => {
+  const N = Notebook, {$,t,el} = N;
+  const state = {shops:[], areas:[], categories:[], selected:null, dirty:false, phase:'loading', busy:false};
+  let listVersion=0, selectionVersion=0;
+  const fields = {
+    name:'name', categoryInput:'category', areaInput:'area', recommendedBy:'recommended_by',
+    lunchBudget:'lunch_budget_text', dinnerBudget:'dinner_budget_text', lunchMin:'lunch_budget_min', lunchMax:'lunch_budget_max',
+    dinnerMin:'dinner_budget_min', dinnerMax:'dinner_budget_max', businessHours:'business_hours_text',
+    tabelogUrl:'tabelog_url', googleMapsUrl:'google_maps_url', imageUrl:'image_url'
+  };
+  const numeric = new Set(['lunchMin','lunchMax','dinnerMin','dinnerMax']);
+  const workbench = document.querySelector('.workbench');
+  function message(text, error=false, node=$('message')) { node.textContent=text; node.classList.toggle('error',error); }
+  function hasDrafts() { return state.dirty || Boolean($('newComment').value.trim()) || Boolean($('imageFile').files.length); }
+  function discard() { return !hasDrafts() || confirm(t('有尚未儲存的修改。放棄這些修改並繼續？','未保存の変更があります。変更を破棄して続行しますか？')); }
+  async function run(button, task, node=$('message')) {
+    if (state.busy) return;
+    state.busy=true;
+    const controls=Array.from($('editorForm').elements).map(control=>[control,control.disabled]);
+    controls.forEach(([control])=>{control.disabled=true;});
+    button.disabled=true; $('editor').setAttribute('aria-busy','true');
+    message(t('處理中，請稍候…','処理中です…'),false,node);
+    try { await task(); } catch(error) { message(error.message,true,node); }
+    finally { state.busy=false; controls.forEach(([control,disabled])=>{control.disabled=disabled;}); button.disabled=false; $('editor').setAttribute('aria-busy','false'); }
+  }
+  function renderList() {
+    N.fillSelect($('area'),t('全部地區','すべてのエリア'),state.areas);
+    N.fillSelect($('category'),t('全部分類','すべてのジャンル'),state.categories);
+    $('restaurantList').replaceChildren();
+    $('count').textContent=state.phase==='ready'?t(`共 ${state.shops.length} 間店`,`${state.shops.length} 件のお店`):'';
+    if (state.phase==='loading') return N.status($('adminListState'),t('讀取店家清單…','リストを読み込み中…'));
+    if (state.phase==='error') return N.status($('adminListState'),t('清單讀取失敗，請重試。','リストを読み込めませんでした。'),load);
+    N.status($('adminListState'),state.shops.length?'':t('沒有符合的店家，請修改搜尋條件。','該当するお店はありません。検索条件を変更してください。'));
+    state.shops.forEach(shop=>{
+      const row=el('button','admin-row'); row.type='button'; row.dataset.testid='admin-open'; row.dataset.shopId=shop.id;
+      row.setAttribute('aria-pressed',String(shop.id===state.selected?.id));
+      row.append(el('strong','',shop.name),el('span','meta',[shop.area,shop.category].filter(Boolean).join(' · ')));
+      row.addEventListener('click',()=>select(shop.id)); $('restaurantList').append(row);
+    });
+  }
+  async function load() {
+    const version=++listVersion; state.phase='loading'; renderList();
+    const params=new URLSearchParams(); ['keyword','area','category'].forEach(key=>{if($(key).value.trim()) params.set(key,$(key).value.trim());});
+    try {
+      const data=await N.request(`/api/admin/restaurants?${params}`); if(version!==listVersion)return;
+      state.shops=data.restaurants.sort((a,b)=>a.id-b.id); state.areas=data.areas; state.categories=data.categories; state.phase='ready';
+    } catch { if(version!==listVersion)return; state.phase='error'; }
+    renderList();
+  }
+  function preview() {
+    const src=N.safeImageUrl($('imageUrl').value); $('imagePreview').hidden=!src;
+    if(src) {$('imagePreview').src=src; $('imagePreview').alt=state.selected?.name||t('店家照片','お店の写真');}
+    else $('imagePreview').removeAttribute('src');
+  }
+  function renderNotes() {
+    if(!state.selected)return;
+    N.comments($('commentItems'),state.selected.comment_items||[],true);
+    $('legacySection').hidden=!state.selected.comments;
+    $('comments').value=state.selected.comments ?? '';
+  }
+  function fillEditor(shop, preserveDrafts=false) {
+    state.selected=shop; state.dirty=false; $('lunchMax').setCustomValidity(''); $('dinnerMax').setCustomValidity('');
+    Object.entries(fields).forEach(([id,key])=>{$(id).value=shop[key]??'';});
+    $('keywordsInput').value=(shop.tags?.length?shop.tags:shop.keywords||[]).join(', ');
+    if(!preserveDrafts){$('newComment').value=''; $('imageFile').value='';}
+    $('editorForm').hidden=false; $('empty').hidden=true;
+    $('editorTitle').textContent=shop.name; workbench.classList.add('is-editing'); renderNotes(); preview(); renderList();
+  }
+  async function select(id) {
+    // busy blocks overlapping loads/saves; selectionVersion discards a load invalidated by clear().
+    if(state.busy || !discard())return;
+    const version=++selectionVersion; state.busy=true;
+    workbench.classList.add('is-editing'); $('editorForm').hidden=true; $('empty').hidden=true;
+    message(t('讀取店家筆記…','お店のノートを読み込み中…'));
+    try { const shop=await N.request(`/api/admin/restaurants/${id}`); if(version!==selectionVersion)return; fillEditor(shop); message(''); $('editorTitle').focus(); }
+    catch(error){ message(error.message,true); $('empty').hidden=false; }
+    finally { state.busy=false; }
+  }
+  function clear() { ++selectionVersion; state.selected=null; state.dirty=false; $('lunchMax').setCustomValidity(''); $('dinnerMax').setCustomValidity(''); $('newComment').value=''; $('imageFile').value=''; $('editorForm').hidden=true; $('empty').hidden=false; workbench.classList.remove('is-editing'); $('editorTitle').textContent=t('選擇店家','お店を選択'); message(''); renderList(); }
+  function editorPayload() {
+    // Omit legacy comments so saving cannot overwrite notes appended since this shop was loaded.
+    const payload={keywords:[],tags:[]};
+    Object.entries(fields).forEach(([id,key])=>{
+      const value=$(id).value.trim();
+      payload[key]=numeric.has(id)?(value===''?null:Number(value)):(value||null);
+    });
+    payload.keywords=$('keywordsInput').value.split(',').map(value=>value.trim()).filter(Boolean);
+    payload.tags=payload.keywords;
+    return payload;
+  }
+  $('editorForm').addEventListener('input',event=>{
+    if(numeric.has(event.target.id)){$('lunchMax').setCustomValidity('');$('dinnerMax').setCustomValidity('');}
+    if(event.target.id!=='newComment' && event.target.id!=='imageFile')state.dirty=true;
+  });
+  $('editorForm').addEventListener('submit',event=>{
+    event.preventDefault(); if(!state.selected || state.busy)return;
+    for(const [min,max] of [['lunchMin','lunchMax'],['dinnerMin','dinnerMax']]){
+      $(max).setCustomValidity('');
+      if($(min).value!=='' && $(max).value!=='' && Number($(min).value)>Number($(max).value)){
+        $(max).setCustomValidity(t('最高預算不能低於最低預算。','上限は下限以上にしてください。'));
+        $(max).reportValidity(); return;
       }
-    };
-    const savedLanguage = localStorage.getItem("tabelogLanguage");
-    const state = {
-      restaurants: [],
-      selectedId: null,
-      areas: [],
-      categories: [],
-      page: 1,
-      pageSize: 10,
-      language: savedLanguage || "zh"
-    };
-
-    const $ = (id) => document.getElementById(id);
-    const t = (key, ...args) => {
-      const value = translations[state.language][key] || translations.zh[key] || key;
-      return typeof value === "function" ? value(...args) : value;
-    };
-
-    function applyLanguage() {
-      document.documentElement.lang = state.language === "ja" ? "ja" : "zh-Hant";
-      document.querySelectorAll("[data-i18n]").forEach((element) => {
-        element.textContent = t(element.dataset.i18n);
+    }
+    run(event.submitter || $('editorForm').querySelector('button[type=submit]'),async()=>{
+      const shop=await N.request(`/api/restaurants/${state.selected.id}`,N.json('PUT',editorPayload()));
+      fillEditor(shop,true); await load(); message(t('修改已儲存。','変更を保存しました。'));
+    });
+  });
+  $('appendComment').addEventListener('click',()=>{
+    if(!state.selected)return;
+    if(!$('newComment').value.trim()){message(t('請先填寫要追加的筆記。','追加するメモを入力してください。'),true);$('newComment').focus();return;}
+    run($('appendComment'),async()=>{
+      const shop=await N.request(`/api/restaurants/${state.selected.id}/comments`,N.json('POST',{comment:$('newComment').value.trim(),created_by:'Admin'}));
+      state.selected.comments=shop.comments; state.selected.comment_items=shop.comment_items; renderNotes(); $('newComment').value='';
+      await load(); message(t('筆記已追加。其他欄位如有修改，請按儲存。','メモを追加しました。他の変更は保存ボタンで保存してください。'));
+    });
+  });
+  $('imageUrl').addEventListener('input',preview);
+  $('imagePreview').addEventListener('error',()=>{$('imagePreview').hidden=true;message(t('照片無法載入，請確認網址。','画像を読み込めません。URL を確認してください。'),true);});
+  $('removeImage').addEventListener('click',()=>{
+    if(!state.selected||state.busy)return;
+    if(!confirm(t('清除照片欄位？按「儲存修改」後會移除此店家的照片，已上傳的本機圖片也會刪除。','写真欄をクリアしますか？「変更を保存」で写真を削除し、アップロード済みのローカル画像も削除します。')))return;
+    $('imageUrl').value='';$('imageFile').value='';state.dirty=true;preview();message(t('照片待移除，請儲存修改。','写真を削除するには変更を保存してください。'));
+  });
+  $('uploadImage').addEventListener('click',()=>{
+    if(!state.selected)return; const file=$('imageFile').files[0];
+    if(!file){message(t('請先選擇照片。','写真を選択してください。'),true);return;}
+    if(file.size>5*1024*1024){message(t('照片超過 5 MB，請縮小後重試。','画像は 5 MB 以下にしてください。'),true);return;}
+    if(state.selected.image_url&&!confirm(t('立即上傳並替換已儲存的照片？原本的本機圖片會被刪除。','保存済みの写真をすぐに置き換えますか？元のローカル画像は削除されます。')))return;
+    run($('uploadImage'),async()=>{
+      const shop=await N.request(`/api/restaurants/${state.selected.id}/image`,{method:'POST',headers:{'Content-Type':file.type},body:await file.arrayBuffer()});
+      state.selected.image_url=shop.image_url; $('imageUrl').value=shop.image_url||''; $('imageFile').value=''; preview();
+      await load(); message(t('照片已上傳並儲存。','写真をアップロードして保存しました。'));
+    });
+  });
+  $('deleteRestaurant').addEventListener('click',()=>{
+    if(!state.selected||state.busy)return;
+    if(!confirm(t(`從本機資料庫永久刪除「${state.selected.name}」及其評論與本機照片？無法復原；Google Sheet 不會同步刪除。`,`「${state.selected.name}」とメモ・ローカル写真を DB から完全に削除しますか？元に戻せません。Google Sheet は変更しません。`)))return;
+    run($('deleteRestaurant'),async()=>{await N.request(`/api/restaurants/${state.selected.id}`,N.json('DELETE'));clear();await load();message(t('店家已刪除。','お店を削除しました。'),false,$('maintenanceStatus'));});
+  });
+  const operations=[
+    ['importSheet','/api/import-sheet',()=>t('Google Sheet → 本機資料庫：匯入會以 Sheet 內容更新相同 ID 的店家並新增其他店家。現有欄位可能被覆寫；請先建立備份。繼續？','Google Sheet → ローカル DB：同じ ID のお店を更新し、他のお店を追加します。既存の項目が上書きされる場合があります。バックアップ後に続行しますか？'),null],
+    ['syncSheet','/api/sync-sheet',()=>t('本機資料庫 → Google Sheet：將以目前資料庫覆寫遠端工作表內容。遠端手動修改可能遺失。繼續？','ローカル DB → Google Sheet：現在の DB でリモートシートを上書きします。シートでの手動変更は失われる場合があります。続行しますか？'),null],
+    ['cleanupTaxonomy','/api/cleanup-taxonomy',()=>t('整理本機資料庫所有店家的地區與分類？現有文字會更新為統一格式，建議先備份。','ローカル DB 全体のエリア・分類を統一しますか？既存の表記が変更されます。先にバックアップしてください。'),null],
+    ['enrichPrices','/api/enrich-prices',()=>t('Tabelog → 本機資料庫：最多檢查 5 間店，將查得的價格寫入缺少價格的紀錄。繼續？','Tabelog → ローカル DB：最大 5 件を確認して、価格のない記録を補完します。続行しますか？'),{limit:5}],
+    ['enrichHours','/api/enrich-hours',()=>t('Tabelog → 本機資料庫：最多檢查 5 間店，將查得的營業時間寫入缺少時間的紀錄。繼續？','Tabelog → ローカル DB：最大 5 件を確認して、営業時間のない記録を補完します。続行しますか？'),{limit:5}]
+  ];
+  operations.forEach(([id,url,confirmation,payload])=>$(id).addEventListener('click',()=>{
+    if(state.busy || !discard() || !confirm(confirmation()))return;
+    run($(id),async()=>{
+      const data=await N.request(url,N.json('POST',payload===null?undefined:payload));
+      clear(); await load();
+      let result=t('操作完成。','操作が完了しました。');
+      if(id==='importSheet')result=t(`匯入 ${data.imported} 間，略過 ${data.skipped} 間。`,`${data.imported} 件取込、${data.skipped} 件スキップ。`);
+      if(id==='syncSheet')result=t(`已同步 ${data.count} 間至 Google Sheet；讀回確認 ${data.verified_count} 間。`,`${data.count} 件を Google Sheet に同期。${data.verified_count} 件を読み戻して確認。`);
+      if(id==='cleanupTaxonomy')result=t(`已整理 ${data.changed} 間店。`,`${data.changed} 件を整理しました。`);
+      if(id==='enrichPrices'||id==='enrichHours')result=t(`已檢查 ${data.checked} 間，更新 ${data.updated} 間。`,`${data.checked} 件確認、${data.updated} 件更新。`);
+      message(result,false,$('maintenanceStatus'));
+      if(N.safeUrl(data.worksheet_url))$('maintenanceStatus').append(document.createTextNode(' '),N.link(t('開啟 Google Sheet','Google Sheet を開く'),data.worksheet_url,true));
+    },$('maintenanceStatus'));
+  }));
+  async function backups() {
+    N.status($('backupList'),t('讀取備份清單…','バックアップ一覧を読み込み中…'));
+    try {
+      const data=await N.request('/api/backups'); $('backupList').replaceChildren();
+      if(!data.backups.length)N.status($('backupList'),t('還沒有備份。可先建立一份。','バックアップはありません。作成しておきましょう。'));
+      data.backups.forEach(filename=>{
+        const row=el('div','backup-link'); const a=el('a','button-link',t('下載','ダウンロード'));
+        a.href=`/api/backups/${encodeURIComponent(filename)}`; a.download=filename; a.setAttribute('aria-label',t(`下載 ${filename}`,`${filename} をダウンロード`));
+        row.append(el('span','',filename),a);$('backupList').append(row);
       });
-      document.querySelectorAll("[data-i18n-placeholder]").forEach((element) => {
-        element.placeholder = t(element.dataset.i18nPlaceholder);
-      });
-      $("adminLangZh").classList.toggle("active", state.language === "zh");
-      $("adminLangJa").classList.toggle("active", state.language === "ja");
-      backupButton.textContent = t("createBackup");
-      cleanupButton.textContent = t("cleanupTaxonomy");
-      enrichButton.textContent = t("enrichPrices");
-      enrichHoursButton.textContent = t("enrichHours");
-      renderFilters();
-      renderList();
-      if (!$("editorForm").hidden && state.selectedId) {
-        setMessage($("message").textContent);
-      }
-    }
-
-    function setLanguage(language) {
-      state.language = language;
-      localStorage.setItem("tabelogLanguage", language);
-      applyLanguage();
-    }
-
-    const backupButton = document.createElement("button");
-    backupButton.id = "createBackup";
-    backupButton.type = "button";
-    backupButton.textContent = t("createBackup");
-    $("reload").insertAdjacentElement("beforebegin", backupButton);
-    const cleanupButton = document.createElement("button");
-    cleanupButton.id = "cleanupTaxonomy";
-    cleanupButton.type = "button";
-    cleanupButton.textContent = t("cleanupTaxonomy");
-    backupButton.insertAdjacentElement("beforebegin", cleanupButton);
-    const enrichButton = document.createElement("button");
-    enrichButton.id = "enrichPrices";
-    enrichButton.type = "button";
-    enrichButton.textContent = t("enrichPrices");
-    cleanupButton.insertAdjacentElement("beforebegin", enrichButton);
-    const enrichHoursButton = document.createElement("button");
-    enrichHoursButton.id = "enrichHours";
-    enrichHoursButton.type = "button";
-    enrichHoursButton.textContent = t("enrichHours");
-    enrichButton.insertAdjacentElement("beforebegin", enrichHoursButton);
-    const commentItems = document.createElement("div");
-    commentItems.id = "commentItems";
-    commentItems.className = "status";
-    $("comments").closest("label").insertAdjacentElement("afterend", commentItems);
-
-    function setMessage(text, isError = false) {
-      $("message").textContent = text;
-      $("message").style.color = isError ? "var(--danger)" : "var(--accent-strong)";
-    }
-
-    function adminHeaders() {
-      return {"Content-Type": "application/json"};
-    }
-
-    async function adminFetch(url, options = {}) {
-      const response = await fetch(url, {...options, credentials: "same-origin"});
-      if (response.status === 401) {
-        window.location.replace("/admin");
-        throw new Error("Session expired");
-      }
-      return response;
-    }
-
-    function keywordParams() {
-      const params = new URLSearchParams();
-      if ($("keyword").value.trim()) params.set("keyword", $("keyword").value.trim());
-      if ($("area").value) params.set("area", $("area").value);
-      if ($("category").value) params.set("category", $("category").value);
-      return params.toString();
-    }
-
-    async function loadRestaurants() {
-      const response = await adminFetch(`/api/admin/restaurants?${keywordParams()}`);
-      const data = await response.json();
-      state.restaurants = data.restaurants.sort((a, b) => a.id - b.id);
-      state.areas = data.areas;
-      state.categories = data.categories;
-      const maxPage = Math.max(1, Math.ceil(state.restaurants.length / state.pageSize));
-      if (state.page > maxPage) state.page = maxPage;
-      renderFilters();
-      renderList();
-      if (state.selectedId && !state.restaurants.some((item) => item.id === state.selectedId)) {
-        clearEditor();
-      }
-    }
-
-    function renderFilters() {
-      fillSelect($("area"), t("allAreas"), state.areas);
-      fillSelect($("category"), t("allCategories"), state.categories);
-    }
-
-    function fillSelect(select, label, values) {
-      const current = select.value;
-      select.innerHTML = `<option value="">${label}</option>`;
-      values.forEach((value) => {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = value;
-        select.appendChild(option);
-      });
-      if (values.includes(current)) select.value = current;
-    }
-
-    function renderList() {
-      const total = state.restaurants.length;
-      const maxPage = Math.max(1, Math.ceil(total / state.pageSize));
-      const start = (state.page - 1) * state.pageSize;
-      const pageItems = state.restaurants.slice(start, start + state.pageSize);
-
-      $("count").innerHTML = `
-        <span>${escapeHtml(t("count", total))}</span>
-        <span class="pager">
-          <button id="prevListPage" type="button" ${state.page <= 1 ? "disabled" : ""}>${escapeHtml(t("prev"))}</button>
-          <span>${state.page} / ${maxPage}</span>
-          <button id="nextListPage" type="button" ${state.page >= maxPage ? "disabled" : ""}>${escapeHtml(t("next"))}</button>
-        </span>
-      `;
-      $("prevListPage").addEventListener("click", () => {
-        state.page = Math.max(1, state.page - 1);
-        renderList();
-      });
-      $("nextListPage").addEventListener("click", () => {
-        state.page = Math.min(maxPage, state.page + 1);
-        renderList();
-      });
-
-      $("restaurantList").innerHTML = "";
-      pageItems.forEach((restaurant) => {
-        const row = document.createElement("button");
-        row.type = "button";
-        row.className = `row ${restaurant.id === state.selectedId ? "active" : ""}`;
-        row.innerHTML = `
-          <div class="row-title">${escapeHtml(restaurant.name)}</div>
-          <div class="row-meta">ID ${restaurant.id} / ${escapeHtml(restaurant.category)} ${escapeHtml(restaurant.area || "")}</div>
-        `;
-        row.addEventListener("click", () => selectRestaurant(restaurant.id));
-        $("restaurantList").appendChild(row);
-      });
-    }
-
-    async function selectRestaurant(id) {
-      const response = await adminFetch(`/api/admin/restaurants/${id}`);
-      const restaurant = await response.json();
-      state.selectedId = restaurant.id;
-      $("empty").hidden = true;
-      $("editorForm").hidden = false;
-      $("name").value = restaurant.name || "";
-      $("categoryInput").value = restaurant.category || "";
-      $("areaInput").value = restaurant.area || "";
-      $("recommendedBy").value = restaurant.recommended_by || "";
-      $("keywordsInput").value = (restaurant.tags || restaurant.keywords || []).join(", ");
-      $("lunchBudget").value = restaurant.lunch_budget_text || "";
-      $("dinnerBudget").value = restaurant.dinner_budget_text || "";
-      $("lunchMin").value = restaurant.lunch_budget_min || "";
-      $("lunchMax").value = restaurant.lunch_budget_max || "";
-      $("dinnerMin").value = restaurant.dinner_budget_min || "";
-      $("dinnerMax").value = restaurant.dinner_budget_max || "";
-      $("businessHours").value = restaurant.business_hours_text || "";
-      $("tabelogUrl").value = restaurant.tabelog_url || "";
-      $("googleMapsUrl").value = restaurant.google_maps_url || "";
-      $("imageUrl").value = restaurant.image_url || "";
-      $("imageFile").value = "";
-      renderImagePreview(restaurant.image_url || "");
-      $("comments").value = restaurant.comments || "";
-      renderCommentItems(restaurant.comment_items || []);
-      $("newComment").value = "";
-      setMessage("");
-      renderList();
-    }
-
-    function renderImagePreview(url) {
-      url = safeImageUrl(url);
-      if (!url) {
-        $("imagePreview").hidden = true;
-        $("imagePreview").removeAttribute("src");
-        return;
-      }
-      $("imagePreview").src = url;
-      $("imagePreview").hidden = false;
-    }
-
-    function clearEditor() {
-      state.selectedId = null;
-      $("empty").hidden = false;
-      $("editorForm").hidden = true;
-      $("imageFile").value = "";
-      renderImagePreview("");
-      renderList();
-    }
-
-    function editorPayload() {
-      return {
-        name: $("name").value.trim(),
-        category: $("categoryInput").value.trim(),
-        area: $("areaInput").value.trim() || null,
-        tabelog_url: $("tabelogUrl").value.trim() || null,
-        google_maps_url: $("googleMapsUrl").value.trim() || null,
-        image_url: $("imageUrl").value.trim() || null,
-        recommended_by: $("recommendedBy").value.trim() || null,
-        comments: $("comments").value.trim(),
-        keywords: $("keywordsInput").value.split(",").map((item) => item.trim()).filter(Boolean),
-        tags: $("keywordsInput").value.split(",").map((item) => item.trim()).filter(Boolean),
-        lunch_budget_text: $("lunchBudget").value.trim() || null,
-        lunch_budget_min: numberOrNull($("lunchMin").value),
-        lunch_budget_max: numberOrNull($("lunchMax").value),
-        dinner_budget_text: $("dinnerBudget").value.trim() || null,
-        dinner_budget_min: numberOrNull($("dinnerMin").value),
-        dinner_budget_max: numberOrNull($("dinnerMax").value),
-        business_hours_text: $("businessHours").value.trim() || null
-      };
-    }
-
-    function numberOrNull(value) {
-      const text = String(value).trim();
-      return text ? Number(text) : null;
-    }
-
-    function renderCommentItems(items) {
-      if (!items.length) {
-        $("commentItems").innerHTML = escapeHtml(t("noComments"));
-        return;
-      }
-      $("commentItems").innerHTML = items.map((item) => `
-        <div style="border:1px solid var(--line); border-radius:6px; padding:8px; margin-bottom:6px; background:#fff;">
-          <strong>${escapeHtml(item.created_by || "Unknown")}</strong>
-          <span style="color:var(--muted);"> ${escapeHtml(item.created_at || "")}</span>
-          <div>${escapeHtml(item.comment || "")}</div>
-        </div>
-      `).join("");
-    }
-
-    $("editorForm").addEventListener("submit", async (event) => {
-      event.preventDefault();
-      if (!state.selectedId) return;
-      const response = await adminFetch(`/api/restaurants/${state.selectedId}`, {
-        method: "PUT",
-        headers: adminHeaders(),
-        body: JSON.stringify(editorPayload())
-      });
-      if (!response.ok) {
-        setMessage(t("saveFailed"), true);
-        return;
-      }
-      setMessage(t("saved"));
-      await loadRestaurants();
-    });
-
-    $("appendComment").addEventListener("click", async () => {
-      if (!state.selectedId || !$("newComment").value.trim()) return;
-      const response = await adminFetch(`/api/restaurants/${state.selectedId}/comments`, {
-        method: "POST",
-        headers: adminHeaders(),
-        body: JSON.stringify({comment: $("newComment").value.trim(), created_by: "Admin"})
-      });
-      if (!response.ok) {
-        setMessage(t("appendFailed"), true);
-        return;
-      }
-      const restaurant = await response.json();
-      $("comments").value = restaurant.comments || "";
-      renderCommentItems(restaurant.comment_items || []);
-      $("newComment").value = "";
-      setMessage(t("appended"));
-    });
-
-    $("imageUrl").addEventListener("input", () => {
-      renderImagePreview($("imageUrl").value.trim());
-    });
-
-    $("uploadImage").addEventListener("click", async () => {
-      if (!state.selectedId) return;
-      const file = $("imageFile").files[0];
-      if (!file) {
-        setMessage(t("chooseImage"), true);
-        return;
-      }
-      const button = $("uploadImage");
-      button.disabled = true;
-      button.textContent = t("uploadingImage");
-      try {
-        const data = await file.arrayBuffer();
-        const response = await adminFetch(`/api/restaurants/${state.selectedId}/image`, {
-          method: "POST",
-          headers: {
-            "Content-Type": file.type
-          },
-          body: data
-        });
-        const restaurant = await response.json();
-        if (!response.ok) throw new Error(restaurant.detail || t("imageUploadFailed"));
-        $("imageUrl").value = restaurant.image_url || "";
-        $("imageFile").value = "";
-        renderImagePreview(restaurant.image_url || "");
-        setMessage(t("imageUploaded"));
-        await loadRestaurants();
-      } catch (error) {
-        setMessage(error.message, true);
-      } finally {
-        button.disabled = false;
-        button.textContent = t("uploadImageButton");
-      }
-    });
-
-    cleanupButton.addEventListener("click", async () => {
-      if (!confirm(t("cleanupConfirm"))) return;
-      cleanupButton.disabled = true;
-      cleanupButton.textContent = t("cleaning");
-      try {
-        const response = await adminFetch("/api/cleanup-taxonomy", {
-          method: "POST",
-          headers: adminHeaders()
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || t("cleanupFailed"));
-        alert(t("cleanupDone", data.changed));
-        await loadRestaurants();
-      } catch (error) {
-        alert(error.message);
-      } finally {
-        cleanupButton.disabled = false;
-        cleanupButton.textContent = t("cleanupTaxonomy");
-      }
-    });
-
-    enrichButton.addEventListener("click", async () => {
-      if (!confirm(t("enrichConfirm"))) return;
-      enrichButton.disabled = true;
-      enrichButton.textContent = t("enriching");
-      try {
-        const response = await adminFetch("/api/enrich-prices", {
-          method: "POST",
-          headers: adminHeaders(),
-          body: JSON.stringify({limit: 5})
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || t("enrichFailed"));
-        alert(t("enrichDone", data.updated, data.checked));
-        await loadRestaurants();
-      } catch (error) {
-        alert(error.message);
-      } finally {
-        enrichButton.disabled = false;
-        enrichButton.textContent = t("enrichPrices");
-      }
-    });
-
-    enrichHoursButton.addEventListener("click", async () => {
-      if (!confirm(t("enrichHoursConfirm"))) return;
-      enrichHoursButton.disabled = true;
-      enrichHoursButton.textContent = t("enrichingHours");
-      try {
-        const response = await adminFetch("/api/enrich-hours", {
-          method: "POST",
-          headers: adminHeaders(),
-          body: JSON.stringify({limit: 5})
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || t("enrichHoursFailed"));
-        alert(t("enrichHoursDone", data.updated, data.checked));
-        await loadRestaurants();
-      } catch (error) {
-        alert(error.message);
-      } finally {
-        enrichHoursButton.disabled = false;
-        enrichHoursButton.textContent = t("enrichHours");
-      }
-    });
-
-    backupButton.addEventListener("click", async () => {
-      if (!confirm(t("backupConfirm"))) return;
-      backupButton.disabled = true;
-      backupButton.textContent = t("backingUp");
-      try {
-        const response = await adminFetch("/api/backups", {
-          method: "POST",
-          headers: adminHeaders()
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || t("backupFailed"));
-        alert(t("backupDone", data.filename));
-      } catch (error) {
-        alert(error.message);
-      } finally {
-        backupButton.disabled = false;
-        backupButton.textContent = t("createBackup");
-      }
-    });
-
-    $("deleteRestaurant").addEventListener("click", async () => {
-      if (!state.selectedId) return;
-      if (!confirm(t("deleteConfirm"))) return;
-      const response = await adminFetch(`/api/restaurants/${state.selectedId}`, {
-        method: "DELETE",
-        headers: adminHeaders()
-      });
-      if (!response.ok) {
-        setMessage(t("deleteFailed"), true);
-        return;
-      }
-      clearEditor();
-      await loadRestaurants();
-    });
-
-    $("importSheet").addEventListener("click", async () => {
-      if (!confirm(t("importConfirm"))) return;
-      const button = $("importSheet");
-      button.disabled = true;
-      button.textContent = t("importing");
-      try {
-        const response = await adminFetch("/api/import-sheet", {
-          method: "POST",
-          headers: adminHeaders()
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || t("importFailed"));
-        alert(t("importDone", data.imported, data.skipped));
-        clearEditor();
-        await loadRestaurants();
-      } catch (error) {
-        alert(error.message);
-      } finally {
-        button.disabled = false;
-        button.textContent = t("importSheet");
-      }
-    });
-
-    $("syncSheet").addEventListener("click", async () => {
-      if (!confirm(t("syncConfirm"))) return;
-      const button = $("syncSheet");
-      button.disabled = true;
-      button.textContent = t("syncing");
-      try {
-        const response = await adminFetch("/api/sync-sheet", {
-          method: "POST",
-          headers: adminHeaders()
-        });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || t("syncFailed"));
-        alert(t("syncDone", data.count, data.verified_count, data.max_id, data.worksheet_name));
-        if (safeUrl(data.worksheet_url)) {
-          window.open(safeUrl(data.worksheet_url), "_blank", "noopener,noreferrer");
-        }
-      } catch (error) {
-        alert(error.message);
-      } finally {
-        button.disabled = false;
-        button.textContent = t("syncSheet");
-      }
-    });
-
-    $("reload").addEventListener("click", loadRestaurants);
-    $("logoutButton").addEventListener("click", async () => {
-      const response = await adminFetch("/api/admin/logout", {method: "POST"});
-      if (response.ok) window.location.replace("/admin");
-    });
-
-    $("keyword").addEventListener("input", debounce(() => {
-      state.page = 1;
-      loadRestaurants();
-    }, 250));
-    $("area").addEventListener("change", () => {
-      state.page = 1;
-      loadRestaurants();
-    });
-    $("category").addEventListener("change", () => {
-      state.page = 1;
-      loadRestaurants();
-    });
-    $("adminLangZh").addEventListener("click", () => setLanguage("zh"));
-    $("adminLangJa").addEventListener("click", () => setLanguage("ja"));
-
-    function debounce(fn, delay) {
-      let timer = null;
-      return (...args) => {
-        clearTimeout(timer);
-        timer = setTimeout(() => fn(...args), delay);
-      };
-    }
-
-    function escapeHtml(value) {
-      return String(value).replace(/[&<>"']/g, (char) => ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#039;"
-      }[char]));
-    }
-
-    applyLanguage();
-    loadRestaurants();
-  
+    }catch(error){N.status($('backupList'),error.message,backups);}
+  }
+  $('listBackups').addEventListener('click',backups);
+  $('createBackup').addEventListener('click',()=>{
+    if(state.busy || !confirm(t('資料庫 → 本機備份：建立目前已儲存資料的備份，超過保留數量的最舊備份將依既有設定輪替移除。繼續？','DB → ローカルバックアップ：保存済みのデータをバックアップします。保存数を超える最古のバックアップは設定に従って削除されます。続行しますか？')))return;
+    run($('createBackup'),async()=>{const data=await N.request('/api/backups',N.json('POST'));await backups();message(t(`已建立備份：${data.filename}`,`バックアップを作成：${data.filename}`),false,$('maintenanceStatus'));},$('maintenanceStatus'));
+  });
+  $('backToList').addEventListener('click',()=>{if(state.busy||!discard())return;const id=state.selected?.id;clear();const row=Array.from(document.querySelectorAll('[data-testid="admin-open"]')).find(node=>node.dataset.shopId===String(id));(row||$('keyword')).focus();});
+  $('reload').addEventListener('click',()=>{if(state.busy||!discard())return;clear();load();});
+  $('logoutButton').addEventListener('click',()=>{if(!discard())return;run($('logoutButton'),async()=>{await N.request('/api/admin/logout',N.json('POST'));location.replace('/admin');},$('maintenanceStatus'));});
+  $('keyword').addEventListener('input',N.debounce(load)); ['area','category'].forEach(id=>$(id).addEventListener('change',load));
+  document.addEventListener('languagechange',()=>{renderList();renderNotes();if(!state.selected)$('editorTitle').textContent=t('選擇店家','お店を選択');});
+  window.addEventListener('beforeunload',event=>{if(hasDrafts()||state.busy){event.preventDefault();event.returnValue='';}});
+  load();
+})();

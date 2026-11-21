@@ -1,17 +1,66 @@
-
 <!doctype html>
 <html lang="zh-Hant">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>管理後台登入</title>
-<link rel="stylesheet" href="/static/css/login.css"></head>
-<body>
-  <main>
-    <h1>管理後台登入</h1>
-    <form id="loginForm">
-      <label>管理密碼 <input id="password" type="password" autocomplete="current-password" required></label>
-      <button type="submit">登入</button>
-      <p id="loginMessage" role="alert"></p>
-    </form>
-  </main>
-  <script src="/static/js/login.js"></script>
-</body></html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>管理登入 · TC</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+<link rel="stylesheet" href="/static/css/tokens.css">
+<link rel="stylesheet" href="/static/css/login.css">
+</head>
+<body data-page="login">
+<a class="skip-link" href="#main">
+<span data-zh="跳至內容" data-ja="本文へ">跳至內容</span>
+</a>
+<header class="shell masthead">
+<a class="brand" href="/">
+<span class="stamp" aria-hidden="true">食</span>
+<div>
+<h1>
+<span data-zh="食事筆記" data-ja="食事ノート">食事筆記</span>
+</h1>
+<p class="brand-note">TC · <span data-zh="朋友的食事筆記" data-ja="友だちの食事ノート">朋友的食事筆記</span>
+</p>
+</div>
+</a>
+<nav class="navigation" aria-label="Navigation">
+<a class="nav-link" href="/" >
+<span data-zh="店家" data-ja="お店">店家</span>
+</a>
+<a class="nav-link" href="/map" >
+<span data-zh="地圖" data-ja="地図">地圖</span>
+</a>
+<div class="lang-switch" aria-label="Language">
+<button type="button" data-language="zh" lang="zh-Hant">中文</button>
+<button type="button" data-language="ja" lang="ja">日本語</button>
+</div>
+</nav>
+</header>
+<main id="main" class="shell">
+<section class="login-sheet" aria-labelledby="loginTitle">
+<h2 id="loginTitle">
+<span data-zh="管理筆記" data-ja="ノートを管理">管理筆記</span>
+</h2>
+<p class="muted">
+<span data-zh="登入後可編輯店家、追加筆記及備份。" data-ja="ログインして、お店の編集・メモの追加・バックアップ。">登入後可編輯店家、追加筆記及備份。</span>
+</p>
+<form id="loginForm">
+<label for="password">
+<span data-zh="管理密碼" data-ja="管理パスワード">管理密碼</span>
+<input id="password" aria-describedby="loginMessage" name="password" type="password" autocomplete="current-password" required>
+</label>
+<button class="primary" type="submit">
+<span data-zh="登入" data-ja="ログイン">登入</span>
+</button>
+<p id="loginMessage" role="alert" aria-live="polite">
+</p>
+</form>
+<a class="nav-link" href="/">
+<span data-zh="返回店家清單" data-ja="お店のリストへ">返回店家清單</span>
+</a>
+</section>
+</main>
+<script src="/static/js/notebook.js"></script>
+<script src="/static/js/login.js"></script>
+</body>
+</html>
