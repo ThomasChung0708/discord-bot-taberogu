@@ -182,7 +182,7 @@ VM 必須有以下設定；表內密鑰文字只是用途說明，不是可以�
 | `SESSION_SECRET` | 首次設定時由操作員在私人終端執行下方產生器，填入產生的值並持續保存。重啟／更新勿重生；輪替會讓既有 session 失效。 |
 | `ADMIN_PASSWORD` | 使用密碼管理器產生的長隨機密碼，建議至少 24 字元；不要用短至 9 字元的密碼。 |
 | `OPENAI_MODEL=gpt-6-luna` | 與本專案指定模型一致。 |
-| `OPENAI_REASONING_EFFORT=none` | 本專案部署預設的推理設定。 |
+| `OPENAI_REASONING_EFFORT=low` | 本專案預設的推理設定；未設定或留白亦使用 `low`，仍可明確指定 `none`。 |
 | `PUBLIC_WEB_URL=https://discord-bottaberogudb.org/` | Discord `/web` 與網頁分享入口。 |
 | `PUBLIC_MAP_URL=https://discord-bottaberogudb.org/map` | 公開地圖入口。 |
 

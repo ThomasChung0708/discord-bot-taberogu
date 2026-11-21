@@ -146,7 +146,7 @@ class Round4DocsTests(unittest.TestCase):
     def test_production_environment_settings(self):
         for required in (
             "SESSION_SECRET", "ADMIN_PASSWORD", "OPENAI_MODEL=gpt-6-luna",
-            "OPENAI_REASONING_EFFORT=none", f"PUBLIC_WEB_URL=https://{DOMAIN}/",
+            "OPENAI_REASONING_EFFORT=low", f"PUBLIC_WEB_URL=https://{DOMAIN}/",
             f"PUBLIC_MAP_URL=https://{DOMAIN}/map",
         ):
             for name in ("deploy/README_GCP_VM.md", ".env.example"):

@@ -54,13 +54,13 @@ class CompletionHelperTests(unittest.TestCase):
 
     def test_defaults_and_completion_budget(self):
         self.assertEqual(get_openai_model(), "gpt-6-luna")
-        self.assertEqual(get_reasoning_effort(), "none")
+        self.assertEqual(get_reasoning_effort(), "low")
         self.assertIs(self.complete(temperature=0.1), self.response)
         kwargs = self.create.call_args.kwargs
         self.assertEqual(kwargs["model"], "gpt-6-luna")
-        self.assertEqual(kwargs["reasoning_effort"], "none")
+        self.assertEqual(kwargs["reasoning_effort"], "low")
         self.assertEqual(kwargs["max_completion_tokens"], 1536)
-        self.assertEqual(kwargs["temperature"], 0.1)
+        self.assertNotIn("temperature", kwargs)
         self.assertEqual(kwargs["timeout"], 20)
         self.assertNotIn("max_tokens", kwargs)
 
@@ -72,7 +72,7 @@ class CompletionHelperTests(unittest.TestCase):
             self.assertEqual(self.create.call_args.kwargs["reasoning_effort"], "low")
         with patch.dict(os.environ, {"OPENAI_MODEL": " ", "OPENAI_REASONING_EFFORT": " "}):
             self.assertEqual(get_openai_model(), "gpt-6-luna")
-            self.assertEqual(get_reasoning_effort(), "none")
+            self.assertEqual(get_reasoning_effort(), "low")
 
     def test_higher_reasoning_omits_sampling_parameters(self):
         for effort in ("low", "medium", "high", "xhigh", "max"):
@@ -87,8 +87,8 @@ class CompletionHelperTests(unittest.TestCase):
         with patch.dict(os.environ, {"OPENAI_REASONING_EFFORT": "invalid-secret-value"}):
             with self.assertLogs("openai_util", level="WARNING") as logs:
                 self.complete(temperature=0.1)
-        self.assertEqual(self.create.call_args.kwargs["reasoning_effort"], "none")
-        self.assertIn("temperature", self.create.call_args.kwargs)
+        self.assertEqual(self.create.call_args.kwargs["reasoning_effort"], "low")
+        self.assertNotIn("temperature", self.create.call_args.kwargs)
         self.assertNotIn("invalid-secret-value", " ".join(logs.output))
 
     def test_explicit_overrides_and_passthrough(self):
@@ -112,9 +112,10 @@ class CompletionHelperTests(unittest.TestCase):
         with self.assertLogs("openai_util", level="WARNING") as logs:
             self.assertIs(self.complete(model="gpt-4.1-mini", temperature=0.1), self.response)
         first, second = [call.kwargs for call in self.create.call_args_list]
-        self.assertEqual(first["reasoning_effort"], "none")
+        self.assertEqual(first["reasoning_effort"], "low")
         self.assertNotIn("reasoning_effort", second)
-        self.assertEqual(second, {key: value for key, value in first.items() if key != "reasoning_effort"})
+        self.assertEqual(second, {**{key: value for key, value in first.items() if key != "reasoning_effort"},
+                                  "temperature": 0.1})
         self.assertIn("gpt-4.1-mini", logs.output[0])
         self.assertIn("reasoning_effort", logs.output[0])
 
@@ -135,7 +136,7 @@ class CompletionHelperTests(unittest.TestCase):
                     self.assertIs(self.complete(model="gpt-4.1-mini"), self.response)
                 self.assertEqual(self.create.call_count, 2)
                 first, second = [call.kwargs for call in self.create.call_args_list]
-                self.assertEqual(first["reasoning_effort"], "none")
+                self.assertEqual(first["reasoning_effort"], "low")
                 self.assertNotIn("reasoning_effort", second)
                 self.assertEqual(second, {
                     key: value for key, value in first.items() if key != "reasoning_effort"
@@ -165,7 +166,8 @@ class CompletionHelperTests(unittest.TestCase):
                 self.create.side_effect = [
                     status_error(f"Unknown parameter: {parameter}"), self.response,
                 ]
-                options = {"temperature": 0.1, "response_format": {"type": "json_object"}}
+                options = {"temperature": 0.1, "response_format": {"type": "json_object"},
+                           "reasoning_effort": "none"}
                 with self.assertLogs("openai_util", level="WARNING"):
                     self.assertIs(self.complete(model="gpt-4.1-mini", **options), self.response)
                 self.assertEqual(self.create.call_count, 2)
@@ -219,7 +221,7 @@ class CompletionHelperTests(unittest.TestCase):
         self.create.side_effect = [status_error(
             "Unknown parameter: temperature", error_type=APIStatusError), self.response]
         with self.assertLogs("openai_util", level="WARNING"):
-            self.assertIs(self.complete(temperature=0.1), self.response)
+            self.assertIs(self.complete(temperature=0.1, reasoning_effort="none"), self.response)
         first, second = [call.kwargs for call in self.create.call_args_list]
         self.assertEqual(second, {key: value for key, value in first.items() if key != "temperature"})
 

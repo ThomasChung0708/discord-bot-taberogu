@@ -20,11 +20,11 @@ def get_openai_model() -> str:
 
 def get_reasoning_effort(value: str | None = None) -> str:
     if value is None:
-        value = os.getenv("OPENAI_REASONING_EFFORT", "none")
-    effort = value.strip().lower() or "none"
+        value = os.getenv("OPENAI_REASONING_EFFORT", "low")
+    effort = value.strip().lower() or "low"
     if effort not in _REASONING_EFFORTS:
-        logger.warning("Invalid OPENAI_REASONING_EFFORT; falling back to none")
-        return "none"
+        logger.warning("Invalid OPENAI_REASONING_EFFORT; falling back to low")
+        return "low"
     return effort
 
 
