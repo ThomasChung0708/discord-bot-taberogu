@@ -29,7 +29,8 @@
 ```env
 DISCORD_TOKEN=你的 Discord bot token
 OPENAI_API_KEY=你的 OpenAI API key
-OPENAI_MODEL=gpt-4.1-mini
+OPENAI_MODEL=gpt-6-luna
+OPENAI_REASONING_EFFORT=none
 DB_PATH=restaurants.sqlite3
 GOOGLE_SHEETS_ID=你的 Google Sheet ID
 GOOGLE_SERVICE_ACCOUNT_FILE=service-account.json
@@ -43,6 +44,8 @@ AUTO_SAVE_RESTAURANT_LINKS=true
 ALLOWED_TEXT_CHANNEL_NAMES=食べログ
 ALLOWED_TEXT_CHANNEL_IDS=
 ```
+
+預設模型已改為 `gpt-6-luna`，繼續使用 Chat Completions。[官方棄用公告](https://developers.openai.com/api/docs/deprecations)列出 `gpt-4.1-mini` 將於 2027-01-14 停用。[官方 GPT-4.x 遷移指南](https://help.openai.com/en/articles/20001600-migrating-from-gpt-4x-to-gpt-6-luna)建議先設 `OPENAI_REASONING_EFFORT=none`；上線前請以代表性請求評估品質、延遲與成本。此設定可選 `none`、`low`、`medium`、`high`、`xhigh`、`max`；提高 effort 時會省略 temperature，且輸出額度包含推理 token，若出現空回覆請增加 `max_completion_tokens`。
 
 `ALLOWED_TEXT_CHANNEL_NAMES` 會限制 bot 只在指定文字頻道讀取一般訊息、記憶聊天、自動保存餐廳，以及右鍵保存餐廳/評論。預設只在 `#食べログ` 生效。若想用頻道 ID 控制，可以填 `ALLOWED_TEXT_CHANNEL_IDS`，多個值用逗號分隔。
 

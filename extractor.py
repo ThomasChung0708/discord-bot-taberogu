@@ -20,6 +20,8 @@ import requests
 from bs4 import BeautifulSoup
 from openai import OpenAI
 
+from openai_util import create_chat_completion
+
 
 TABELOG_RE = re.compile(r"https?://(?:[a-z0-9-]+\.)?tabelog\.com/[^\s)>]+", re.I)
 GOOGLE_MAPS_RE = re.compile(
@@ -603,10 +605,11 @@ def extract_restaurant(
         "rule": "Extract restaurant information only. Do not judge whether the restaurant is good or recommended. If a restaurant name or Tabelog title is available, return it.",
     }
 
-    response = client.chat.completions.create(
+    response = create_chat_completion(
+        client,
         model=model,
         temperature=0.1,
-        max_tokens=500,
+        max_completion_tokens=1536,
         timeout=20,
         response_format={"type": "json_object"},
         messages=[

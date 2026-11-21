@@ -39,6 +39,7 @@ from extractor import (
     find_google_maps_url,
     find_tabelog_url,
 )
+from openai_util import create_chat_completion, get_openai_model
 from sheets_sync import sync_restaurants_to_sheet
 from url_utils import sanitize_url, validate_url
 
@@ -51,7 +52,7 @@ load_dotenv(BASE_DIR / ".env")
 
 # .env 是部署時放機密資料的地方；這些值不要 commit 到 GitHub。
 DISCORD_TOKEN = os.environ["DISCORD_TOKEN"]
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+OPENAI_MODEL = get_openai_model()
 DB_PATH_VALUE = os.getenv("DB_PATH", "restaurants.sqlite3")
 DB_PATH = Path(DB_PATH_VALUE)
 if not DB_PATH.is_absolute():
@@ -458,7 +459,8 @@ def summarize_chat_memory(existing_summary: str, messages: list[ChatMemoryMessag
         for message in messages
         if message.content.strip()
     )
-    response = openai_client.chat.completions.create(
+    response = create_chat_completion(
+        openai_client,
         model=OPENAI_MODEL,
         messages=[
             {
@@ -481,7 +483,7 @@ def summarize_chat_memory(existing_summary: str, messages: list[ChatMemoryMessag
             },
         ],
         temperature=0.1,
-        max_tokens=300,
+        max_completion_tokens=1024,
         timeout=20,
     )
     return (response.choices[0].message.content or "").strip()
@@ -1238,7 +1240,8 @@ def infer_recommendation_intent(request: str, memory_context: str = "") -> dict[
     known = recommendation_known_values()
     fallback = rule_based_recommendation_intent(request)
     try:
-        response = openai_client.chat.completions.create(
+        response = create_chat_completion(
+            openai_client,
             model=OPENAI_MODEL,
             messages=[
                 {
@@ -1276,7 +1279,7 @@ def infer_recommendation_intent(request: str, memory_context: str = "") -> dict[
                 },
             ],
             temperature=0.1,
-            max_tokens=500,
+            max_completion_tokens=1536,
             response_format={"type": "json_object"},
             timeout=20,
         )
@@ -1611,7 +1614,8 @@ def rank_recommendations_with_ai(
         for restaurant in candidates
     ]
     try:
-        response = openai_client.chat.completions.create(
+        response = create_chat_completion(
+            openai_client,
             model=OPENAI_MODEL,
             messages=[
                 {
@@ -1636,7 +1640,7 @@ def rank_recommendations_with_ai(
                 },
             ],
             temperature=0.2,
-            max_tokens=500,
+            max_completion_tokens=1536,
             response_format={"type": "json_object"},
             timeout=20,
         )
