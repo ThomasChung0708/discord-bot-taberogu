@@ -99,7 +99,7 @@ class Round1Tests(unittest.TestCase):
     def test_commands_registered(self):
         expected = {"list_restaurants", "edit_restaurant", "delete_restaurant", "add_comment",
                     "export_map_csv", "sync_google_sheet", "backup_db", "save_restaurant",
-                    "find_restaurant", "recommend", "recommend_restaurant", "recommed",
+                    "find_restaurant", "recommend", "recommend_restaurant", "recommed", "reset",
                     "enrich_prices", "map", "web", "保存餐廳資訊", "保存為餐廳評論"}
         commands = self.bot.client.tree.get_commands()
         self.assertEqual({command.name for command in commands}, expected)

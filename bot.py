@@ -23,6 +23,10 @@ import os
 import re
 import sqlite3
 import tempfile
+import time
+from collections import OrderedDict
+from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 
 import discord
@@ -91,6 +95,148 @@ CHAT_MEMORY_ENABLED = os.getenv("CHAT_MEMORY_ENABLED", "true").strip().lower() n
 CHAT_MEMORY_RAW_LIMIT = int(os.getenv("CHAT_MEMORY_RAW_LIMIT", "100"))
 CHAT_MEMORY_SUMMARY_BATCH = int(os.getenv("CHAT_MEMORY_SUMMARY_BATCH", "50"))
 CHAT_MEMORY_MAX_MESSAGE_CHARS = int(os.getenv("CHAT_MEMORY_MAX_MESSAGE_CHARS", "800"))
+
+# Short, private conversation state, separate from persistent channel chat memory.
+FOLLOWUP_TTL_SECONDS = 600
+FOLLOWUP_CONTEXT_CAP = 200
+
+
+@dataclass
+class RecommendationContext:
+    request: str
+    intent: dict[str, object]
+    bot_message_id: int | None
+    created_at: float
+    last_bot_reply: str = ""
+    awaiting_followup: bool = False
+
+
+recommendation_contexts: OrderedDict[tuple[int, int], RecommendationContext] = OrderedDict()
+
+
+def remember_recommendation_context(
+    user_id: int, channel_id: int, request: str, intent: dict[str, object],
+    bot_message_id: int | None = None, *, last_bot_reply: str = "", now: float | None = None,
+) -> None:
+    now = time.monotonic() if now is None else now
+    for key, context in list(recommendation_contexts.items()):
+        if now - context.created_at >= FOLLOWUP_TTL_SECONDS:
+            del recommendation_contexts[key]
+    key = (user_id, channel_id)
+    recommendation_contexts.pop(key, None)
+    # Query-string punctuation in Maps links is not a follow-up question.
+    reply_text = re.sub(r"https?://\S+", "", last_bot_reply)
+    recommendation_contexts[key] = RecommendationContext(
+        request[:2000], deepcopy(intent), bot_message_id, now,
+        last_bot_reply[:2000], bool(re.search(r"[?？]", reply_text)),
+    )
+    while len(recommendation_contexts) > FOLLOWUP_CONTEXT_CAP:
+        recommendation_contexts.popitem(last=False)
+
+
+def load_recommendation_context(
+    user_id: int, channel_id: int, *, now: float | None = None,
+) -> RecommendationContext | None:
+    now = time.monotonic() if now is None else now
+    key = (user_id, channel_id)
+    context = recommendation_contexts.get(key)
+    if context and now - context.created_at >= FOLLOWUP_TTL_SECONDS:
+        del recommendation_contexts[key]
+        return None
+    return deepcopy(context)
+
+
+def clear_recommendation_context(user_id: int, channel_id: int) -> None:
+    """Reset only this user's short-lived recommendation exchange in this channel."""
+    recommendation_contexts.pop((user_id, channel_id), None)
+
+
+def previous_recommendation_exchange(context: RecommendationContext | None) -> dict[str, object] | None:
+    if context is None:
+        return None
+    return {"user_request": context.request, "bot_reply": context.last_bot_reply,
+            "parsed_constraints": deepcopy(context.intent)}
+
+
+PREVIOUS_EXCHANGE_INSTRUCTION = (
+    "previous_exchange 是同一使用者在此頻道上一輪的請求、bot 回覆/追問與解析條件，"
+    "與長期 chat_memory 分開；chat_memory 不能替代 previous_exchange。"
+    "如果新訊息是新話題或與上一輪無關，必須忽略 previous_exchange，只使用新訊息。"
+    "新訊息明確指定的條件永遠優先，不得強加舊地區或其他舊條件。"
+)
+
+
+def is_short_followup_answer(text: str) -> bool:
+    """Conservatively accept a constraint fragment, never a complete new question."""
+    if len(text) > 60 or re.search(
+        r"[?？\n]|推薦|推荐|請問|有沒有|有什麼|哪|何|おすすめ|ありますか|ですか|"
+        r"\b(?:recommend|where|what|which|could|can|how)\b", text, re.I,
+    ):
+        return False
+    local = sanitize_recommendation_intent(rule_based_recommendation_intent(text))
+    groups = [list_from_intent(local, key) for key in
+              ("area_terms", "food_terms", "scene_terms", "exclude_terms")]
+    # An area plus a cuisine/budget/scene is already a self-contained request.
+    if sum(bool(group) for group in groups) + (local.get("budget") is not None) != 1:
+        return False
+    remainder = normalize_search_text(text)
+    terms = [term for group in groups for term in group]
+    if local.get("budget") is not None:
+        terms.append(str(local["budget"]))
+    for term in sorted(terms, key=len, reverse=True):
+        remainder = remainder.replace(normalize_search_text(term), " ")
+    remainder = re.sub(
+        r"我|想吃|想喝|想要|要吃|吃點|不要|不吃|排除|避開|預算|预算|元|円|日圓|以內|以下|"
+        r"就好|好了|吧|呢|的|了|食べたい|飲みたい|が|を|で|に|まで|なし|以外|抜き|"
+        r"\b(?:i|want|craving|please|budget|under|yen|without)\b|[\s，,。!！]", "", remainder,
+        flags=re.I,
+    )
+    return not remainder
+
+
+def has_recommendation_constraints(text: str) -> bool:
+    local = sanitize_recommendation_intent(rule_based_recommendation_intent(text))
+    return any(list_from_intent(local, key) for key in (
+        "area_terms", "food_terms", "scene_terms", "exclude_terms",
+    )) or local.get("budget") is not None
+
+
+def message_followup_context(message: discord.Message) -> RecommendationContext | None:
+    """Merge only an explicit reply, or a short mention answering the last question."""
+    context = load_recommendation_context(message.author.id, message.channel.id)
+    if not context or not client.user:
+        return None
+    text = re.sub(rf"<@!?{client.user.id}>", "", message.content).strip()
+    reference = getattr(message, "reference", None)
+    if reference is not None:
+        # An explicit reply to another message starts a fresh query, even with a mention.
+        return context if (context.bot_message_id is not None
+                           and reference.message_id == context.bot_message_id
+                           and has_recommendation_constraints(text)) else None
+    return context if (client.user in message.mentions and context.awaiting_followup
+                       and is_short_followup_answer(text)) else None
+
+
+def is_recommendation_reset(text: str) -> bool:
+    """Recognize a reset request, rather than an incidental quoted phrase."""
+    return bool(re.match(
+        r"^(?:(?:請|请|麻煩|麻烦|幫我|帮我|please)\s*)*"
+        r"(?:換個話題|换个话题|換話題|换话题|新話題|新话题|重新開始|重新开始|"
+        r"重置對話|重置对话|重設對話|重置推薦條件|重置推荐条件|"
+        r"清除對話|清除对话|清除上下文|清除記憶|清除记忆|"
+        r"忘記前面|忘记前面|忘記之前|忘记之前|"
+        r"新しい話題|話題を変えて|話題を変える|最初から|やり直し|リセット|"
+        r"new\s+topic\b|start\s+over\b)"
+        r"(?:$|[\s，,。.!！?？:：]|吧|啦|ね|して|してください)", text.strip(), re.I,
+    ) or re.fullmatch(r"重來[。!！]?|重来[。!！]?", text.strip()))
+
+
+def recommendation_reset_confirmation(text: str) -> str:
+    if re.search(r"[ぁ-ゖァ-ヺ]|最初から", text):
+        return "このチャンネルでの前の条件をリセットしたよ。新しい話題をどうぞ！"
+    if re.search(r"\b(?:new\s+topic|start\s+over)\b", text, re.I):
+        return "Cleared your previous context in this channel. Let's start fresh!"
+    return "已清除你在這個頻道的推薦上下文，可以開始新話題了！"
 
 # 建立共用物件：
 # - db 負責所有 SQLite 操作
@@ -348,17 +494,40 @@ async def on_message(message: discord.Message) -> None:
         return
     if not is_allowed_text_channel(message):
         return
+    keyword = re.sub(rf"<@!?{client.user.id}>", "", message.content).strip()
+    context = message_followup_context(message)
+    referenced = getattr(getattr(message, "reference", None), "resolved", None)
+    replies_to_bot = getattr(getattr(referenced, "author", None), "id", None) == client.user.id
+    saved = load_recommendation_context(message.author.id, message.channel.id)
+    replies_to_bot = replies_to_bot or bool(
+        saved and saved.bot_message_id is not None
+        and getattr(getattr(message, "reference", None), "message_id", None) == saved.bot_message_id
+    )
+    if is_recommendation_reset(keyword) and (client.user in message.mentions or context is not None
+                                             or replies_to_bot):
+        clear_recommendation_context(message.author.id, message.channel.id)
+        await message.reply(recommendation_reset_confirmation(keyword), mention_author=False,
+                            allowed_mentions=discord.AllowedMentions.none())
+        return
     if AUTO_SAVE_RESTAURANT_LINKS and has_restaurant_link(message.content):
         await remember_chat_message(message)
         await auto_save_restaurant_from_message(message)
         return
-    if client.user not in message.mentions:
+    if replies_to_bot and not has_recommendation_constraints(keyword):
         await remember_chat_message(message)
         return
+    if client.user not in message.mentions and context is None:
+        await remember_chat_message(message)
+        return
+    if context is None:
+        # Another addressed request consumes the opportunity to answer the old question.
+        previous = recommendation_contexts.get((message.author.id, message.channel.id))
+        if previous is not None:
+            previous.awaiting_followup = False
 
-    keyword = re.sub(rf"<@!?{client.user.id}>", "", message.content).strip()
     if not keyword:
-        await message.reply("請在提到我後面加上關鍵字，例如：@食べログBOT 拉麵", mention_author=False)
+        await message.reply("請在提到我後面加上關鍵字，例如：@食べログBOT 拉麵", mention_author=False,
+                            allowed_mentions=discord.AllowedMentions.none())
         return
 
     if is_map_request(keyword):
@@ -371,28 +540,7 @@ async def on_message(message: discord.Message) -> None:
         await enrich_prices_from_message(message, keyword)
         return
 
-    recommendation_request = parse_recommendation_request(keyword)
-    if recommendation_request is not None:
-        await send_recommendations(message, recommendation_request)
-        return
-    keyword = cleanup_search_keyword(keyword)
-    if not keyword:
-        await message.reply("請在提到我後面加上關鍵字，例如：@食べログBOT 拉麵", mention_author=False)
-        return
-    if is_map_request(keyword):
-        await send_map_url(message)
-        return
-    if is_web_request(keyword):
-        await send_public_web_url(message)
-        return
-    if is_enrich_prices_message(keyword):
-        await enrich_prices_from_message(message, keyword)
-        return
-    recommendation_request = parse_recommendation_request(keyword)
-    if recommendation_request is not None:
-        await send_recommendations(message, recommendation_request)
-        return
-    await send_search_results(message, keyword)
+    await route_mention_text(message, keyword, context=context)
 
 
 async def remember_chat_message(message: discord.Message) -> None:
@@ -811,6 +959,16 @@ async def find_restaurant(interaction: discord.Interaction, keyword: str) -> Non
         ephemeral=True,
     )
 
+@client.tree.command(name="reset", description="清除你在目前頻道的推薦上下文並開始新話題")
+async def reset(interaction: discord.Interaction) -> None:
+    """Public reset: no administrator permission or database access required."""
+    clear_recommendation_context(interaction.user.id, interaction.channel_id)
+    await interaction.response.send_message(
+        recommendation_reset_confirmation("重新開始"), ephemeral=True,
+        allowed_mentions=discord.AllowedMentions.none(),
+    )
+
+
 @client.tree.command(name="recommend", description="從資料庫餐廳中推薦符合條件的店")
 @app_commands.describe(request="例如：新宿 家系 濃厚 1500，或：池袋 豬排")
 async def recommend(interaction: discord.Interaction, request: str) -> None:
@@ -845,10 +1003,24 @@ async def send_recommendation_interaction(interaction: discord.Interaction, requ
             guild_id=interaction.guild_id,
             channel_id=interaction.channel_id,
         )
-    content = build_recommendation_response(request, memory_context=memory_context)
-    await interaction.followup.send(
-        content, ephemeral=False, allowed_mentions=discord.AllowedMentions.none(),
+    context = None
+    if getattr(interaction, "user", None) is not None and interaction.channel_id is not None:
+        context = load_recommendation_context(interaction.user.id, interaction.channel_id)
+    previous_exchange = previous_recommendation_exchange(context)
+    intent = infer_recommendation_intent(
+        request, memory_context=memory_context, previous_exchange=previous_exchange,
     )
+    content = build_recommendation_response(
+        request, memory_context=memory_context, intent=intent, previous_exchange=previous_exchange,
+    )
+    sent = await interaction.followup.send(
+        content, ephemeral=False, allowed_mentions=discord.AllowedMentions.none(), wait=True,
+    )
+    if getattr(interaction, "user", None) is not None and interaction.channel_id is not None:
+        remember_recommendation_context(
+            interaction.user.id, interaction.channel_id, request, intent,
+            bot_message_id=getattr(sent, "id", None), last_bot_reply=content,
+        )
 
 
 def parse_recommendation_request(keyword: str) -> str | None:
@@ -952,15 +1124,108 @@ def cleanup_inline_recommendation_text(text: str) -> str:
     return strip_recommendation_leading_words(result)
 
 
-async def send_recommendations(target: discord.Message, request: str) -> None:
+def merge_followup_request(
+    context: RecommendationContext, request: str, intent: dict[str, object],
+) -> tuple[str, dict[str, object]]:
+    """New area/food replaces the old preference; unspecified constraints survive."""
+    merged = deepcopy(intent)
+    local = sanitize_recommendation_intent(rule_based_recommendation_intent(request))
+    for key in ("area_terms", "food_terms", "scene_terms"):
+        # Explicit words win over guesses based on channel memory.
+        merged[key] = (list_from_intent(local, key)
+                       or list_from_intent(context.intent, key)
+                       or list_from_intent(intent, key))
+    # A new positive food preference supersedes inherited exclusions, including aliases.
+    local_food_aliases = {
+        normalize_search_text(alias) for food in list_from_intent(local, "food_terms")
+        for alias in [food, *recommendation_synonyms(food)]
+    }
+    inherited_exclusions = unique_texts([
+        *list_from_intent(context.intent, "exclude_terms"),
+        *list_from_intent(intent, "exclude_terms"),
+    ])
+    merged["exclude_terms"] = unique_texts([
+        term for term in inherited_exclusions
+        if not local_food_aliases.intersection(
+            normalize_search_text(alias) for food in [term, *food_words_in_text(term)]
+            for alias in [food, *recommendation_synonyms(food)]
+        )
+    ] + list_from_intent(local, "exclude_terms"))
+    merged["food_terms"] = requested_food_terms(merged)
+    if isinstance(local.get("budget"), int):
+        merged["budget"] = local["budget"]
+    elif not isinstance(intent.get("budget"), int):
+        merged["budget"] = context.intent.get("budget")
+    # Rebuild searchable text rather than concatenating obsolete areas/cuisines.
+    merged["expanded_terms"] = unique_texts([
+        alias for food in list_from_intent(merged, "food_terms")
+        for alias in [food, *recommendation_synonyms(normalize_search_text(food))]
+    ])
+    parts = [request, *list_from_intent(merged, "area_terms"),
+             *list_from_intent(merged, "food_terms"), *list_from_intent(merged, "scene_terms")]
+    if merged.get("budget") is not None:
+        parts.append(f"預算 {merged['budget']}" if not recommendation_is_japanese(request)
+                     else f"予算 {merged['budget']}")
+    merged_request = " ".join(unique_texts(parts))
+    merged["summary"] = merged_request
+    # Appended canonical search terms may use another language; retain the user's wording.
+    merged["response_japanese"] = recommendation_is_japanese(request)
+    return merged_request, merged
+
+
+async def route_mention_text(
+    target: discord.Message, text: str, *, context: RecommendationContext | None = None,
+) -> None:
+    """Testable routing shared by mentions and replies; bare food keeps search UI."""
+    request = parse_recommendation_request(text)
+    food_preference = looks_like_food_preference(text) and bool(re.search(
+        r"想吃|想喝|想要|要吃|吃點|食べたい|食べる|飲みたい|\b(?:want|craving)\b", text, re.I,
+    ))
+    if context is not None or request is not None or food_preference:
+        request = text if request is None else request
+        if context is None:
+            await send_recommendations(target, request)
+        else:
+            await send_recommendations(target, request, context=context)
+        return
+    keyword = cleanup_search_keyword(text)
+    if not keyword:
+        await target.reply("請在提到我後面加上關鍵字，例如：@食べログBOT 拉麵", mention_author=False,
+                           allowed_mentions=discord.AllowedMentions.none())
+    elif is_map_request(keyword):
+        await send_map_url(target)
+    elif is_web_request(keyword):
+        await send_public_web_url(target)
+    elif is_enrich_prices_message(keyword):
+        await enrich_prices_from_message(target, keyword)
+    else:
+        await send_search_results(target, keyword)
+
+
+async def send_recommendations(
+    target: discord.Message, request: str, *, context: RecommendationContext | None = None,
+) -> None:
     """Reply to a mention-based recommendation request."""
 
+    user_request = request
+    if client.user and isinstance(getattr(target, "content", None), str):
+        user_request = re.sub(rf"<@!?{client.user.id}>", "", target.content).strip()
+    previous = context
+    if getattr(target, "author", None) is not None and getattr(target, "channel", None) is not None:
+        previous = load_recommendation_context(target.author.id, target.channel.id)
+    previous_exchange = previous_recommendation_exchange(previous)
     if not request:
-        await target.reply(
-            "想找什麼類型呢？例如：`@食べログBOT 找 新宿 家系 濃厚`",
+        question = "想找什麼類型呢？例如：`@食べログBOT 找 新宿 家系 濃厚`"
+        sent = await target.reply(
+            question,
             mention_author=False,
             allowed_mentions=discord.AllowedMentions.none(),
         )
+        if getattr(target, "author", None) is not None and getattr(target, "channel", None) is not None:
+            remember_recommendation_context(
+                target.author.id, target.channel.id, user_request, {},
+                bot_message_id=getattr(sent, "id", None), last_bot_reply=question,
+            )
         return
     status = await target.reply(
         "正在從已儲存的餐廳裡挑候選...", mention_author=False,
@@ -972,41 +1237,69 @@ async def send_recommendations(target: discord.Message, request: str) -> None:
             guild_id=target.guild.id,
             channel_id=target.channel.id,
         )
-    response = build_recommendation_response(request, memory_context=memory_context)
+    if context is not None:
+        followup = request
+        local = sanitize_recommendation_intent(rule_based_recommendation_intent(followup))
+        request, carried = merge_followup_request(context, followup, local)
+        inferred = infer_recommendation_intent(
+            request, memory_context=memory_context, previous_exchange=previous_exchange,
+        )
+        intent = merge_recommendation_intents(inferred, carried)
+        # Inference sees the full merged request, but cannot silently change its constraints.
+        for key in ("area_terms", "food_terms", "exclude_terms", "budget", "response_japanese"):
+            intent[key] = carried[key]
+    else:
+        intent = infer_recommendation_intent(
+            request, memory_context=memory_context, previous_exchange=previous_exchange,
+        )
+    response = build_recommendation_response(
+        request, memory_context=memory_context, intent=intent, previous_exchange=previous_exchange,
+    )
     await status.edit(content=response, allowed_mentions=discord.AllowedMentions.none())
+    if getattr(target, "author", None) is not None and getattr(target, "channel", None) is not None:
+        remember_recommendation_context(
+            target.author.id, target.channel.id, user_request, intent,
+            bot_message_id=getattr(status, "id", None), last_bot_reply=response,
+        )
 
 
-def build_recommendation_response(request: str, memory_context: str = "") -> str:
+def build_recommendation_response(
+    request: str, memory_context: str = "", *, intent: dict[str, object] | None = None,
+    previous_exchange: dict[str, object] | None = None,
+) -> str:
     """Build a recommendation message without inventing restaurants."""
 
-    intent = infer_recommendation_intent(request, memory_context=memory_context)
+    intent = intent if intent is not None else infer_recommendation_intent(
+        request, memory_context=memory_context, previous_exchange=previous_exchange,
+    )
     areas = list_from_intent(intent, "area_terms")
-    area_pool = filter_restaurants_by_area(db.all(), areas)
     candidates = recommendation_candidates(
         request,
         memory_context=memory_context,
         intent=intent,
         limit=10,
     )
-    japanese = recommendation_is_japanese(request)
+    japanese = intent.get("response_japanese", recommendation_is_japanese(request))
     broad = recommendation_is_broad(request, intent)
     used_area_fallback = False
-    if not candidates and areas and area_pool:
-        candidates = area_fallback_candidates(area_pool, intent, limit=10)
+    food_request = " ".join(requested_food_terms(intent))
+    if food_request:
+        candidates = [r for r in candidates if restaurant_matches_requested_food(r, food_request)]
+    if not candidates:
+        candidates = no_match_alternatives(request, intent)
         used_area_fallback = bool(candidates)
     if not candidates:
+        notice = recommendation_no_match_notice(request, intent, japanese=japanese)
         if areas:
-            area_text = "、".join(areas)
-            return (f"{area_text}のお店はまだ見つからなかったよ。近くの別のエリアでもいい？"
-                    if japanese else f"{area_text}還沒有能推薦的店，附近其他地區也可以嗎？")
-        return ("条件に合うお店が見つからなかったよ。別のエリアや料理でもいい？"
-                if japanese else "暫時沒找到適合的店，要不要換個地區或料理試試？")
+            return notice + ("近くの別のエリアでもいい？" if japanese else "附近其他地區也可以嗎？")
+        return notice + ("別のエリアや料理でもいい？" if japanese else "要不要換個地區或料理試試？")
 
-    ranked = rank_recommendations_with_ai(
+    ranked = [] if used_area_fallback else rank_recommendations_with_ai(
         request,
         candidates,
         memory_context=memory_context,
         intent=intent,
+        previous_exchange=previous_exchange,
     )
     # Keep the top pick, then prefer other cuisines for an open-ended request.
     by_id = {restaurant.id: restaurant for restaurant in candidates}
@@ -1025,8 +1318,7 @@ def build_recommendation_response(request: str, memory_context: str = "") -> str
 
     lines = []
     if used_area_fallback:
-        lines.append("その料理は見つからなかったけど、同じエリアならこちら。" if japanese
-                     else "這個地區還沒找到指定料理，先看看這裡的其他店。")
+        lines.append(recommendation_no_match_notice(request, intent, japanese=japanese))
     budget_request = recommendation_budget(intent, request) is not None or any(
         word in request for word in ["便宜", "平價", "省錢", "預算", "安い", "安く", "予算", "格安"]
     )
@@ -1041,6 +1333,10 @@ def build_recommendation_response(request: str, memory_context: str = "") -> str
             recommendation_detail_text(restaurant.area),
         )))
         parts = [title, details, reason]
+        if used_area_fallback and requests_pizza(food_request) and not restaurant_has_recorded_pizza(restaurant):
+            if normalize_search_text("イタリアン") in normalize_search_text(restaurant.category):
+                parts.append("イタリア料理の記録のみで、ピザの提供は未記録。" if japanese
+                             else "僅記錄為義大利料理，未記錄有供應披薩。")
         price = recommendation_price_text(restaurant, japanese=japanese)
         if price:
             parts.append(price)
@@ -1054,12 +1350,73 @@ def build_recommendation_response(request: str, memory_context: str = "") -> str
         if links:
             parts.append(" / ".join(links))
         lines.append("\n".join(part for part in parts if part))
-    if broad:
+    if used_area_fallback:
+        lines.append("同じエリアで別の料理にするか、他のエリアも試してみる？" if japanese
+                     else "想留在原地區換種料理，還是試試其他地區？")
+    elif broad:
         if areas:
             lines.append("どんな料理の気分？" if japanese else "今天比較想吃哪一種料理？")
         else:
             lines.append("エリアや料理の希望はある？" if japanese else "想限定哪個地區或哪種料理嗎？")
     return trim_discord_message("\n\n".join(lines))
+
+
+def requests_pizza(request: str) -> bool:
+    normalized = normalize_search_text(request)
+    return any(normalize_search_text(word) in normalized for word in PIZZA_TERMS)
+
+
+def restaurant_has_recorded_pizza(restaurant: Restaurant) -> bool:
+    evidence = " ".join([restaurant.name, restaurant.category, *restaurant.keywords,
+                         *restaurant.tags, *recommendation_comments(restaurant)])
+    return requests_pizza(evidence)
+
+
+def restaurant_matches_requested_food(restaurant: Restaurant, request: str) -> bool:
+    if requests_pizza(request):
+        return restaurant_has_recorded_pizza(restaurant)
+    foods = food_words_in_text(request)
+    terms = unique_texts(alias for food in foods for alias in [
+        normalize_search_text(food), *recommendation_synonyms(food),
+    ])
+    return score_restaurant_for_request(restaurant, terms, None, include_area=False) > 0
+
+
+def no_match_alternatives(request: str, intent: dict[str, object]) -> list[Restaurant]:
+    """One local option, a related cuisine elsewhere, then up to one more real shop."""
+    restaurants = db.all()
+    eligible = area_fallback_candidates(restaurants, intent, limit=len(restaurants))
+    areas = list_from_intent(intent, "area_terms")
+    local = filter_restaurants_by_area(eligible, areas) if areas else []
+    foods = requested_food_terms(intent)
+    terms = unique_texts(alias for food in foods for alias in [
+        normalize_search_text(food), *recommendation_synonyms(food),
+    ])
+    related = sorted(
+        [r for r in eligible if score_restaurant_for_request(r, terms, None, include_area=False) > 0],
+        key=lambda r: score_restaurant_for_request(r, terms, None, include_area=False), reverse=True,
+    ) if terms else []
+    ordered = [*local[:1], *related, *local[1:]]
+    if not ordered:
+        ordered = eligible
+    seen: set[int] = set()
+    result = []
+    for restaurant in ordered:
+        if restaurant.id not in seen:
+            result.append(restaurant)
+            seen.add(restaurant.id)
+    return result
+
+
+def recommendation_no_match_notice(request: str, intent: dict[str, object], *, japanese: bool) -> str:
+    area = "、".join(list_from_intent(intent, "area_terms"))
+    foods = requested_food_terms(intent)
+    food = ("ピザ" if japanese else "披薩") if requests_pizza(" ".join(foods)) else "、".join(foods[:2])
+    if japanese:
+        return f"{area + 'では' if area else ''}{food or '条件に合う料理'}のお店はまだ記録がないよ。"
+    if area and food:
+        return f"這個地區還沒找到指定料理：{area}尚未記錄符合「{food}」的店。"
+    return f"{area or '目前'}尚未記錄符合「{food or '這些條件'}」的店。"
 
 
 def recommendation_is_japanese(request: str) -> bool:
@@ -1072,8 +1429,10 @@ def recommendation_is_japanese(request: str) -> bool:
 def recommendation_is_broad(request: str, intent: dict[str, object]) -> bool:
     """Scenes/areas alone do not specify a cuisine, even if AI expands them."""
     normalized = normalize_search_text(request)
+    for term in list_from_intent(intent, "exclude_terms"):
+        normalized = normalized.replace(normalize_search_text(term), " ")
     restaurants = db.all()
-    foods = [*list_from_intent(intent, "food_terms"),
+    foods = [*requested_food_terms(intent),
              *(r.category for r in restaurants), *(r.name for r in restaurants),
              "拉麵", "拉面", "沾麵", "豬排", "燒肉", "燒烤", "壽司", "咖哩", "居酒屋",
              "ラーメン", "寿司", "焼肉", "とんかつ", "カレー", "咖啡", "カフェ", "義大利麵", "パスタ"]
@@ -1111,13 +1470,18 @@ def recommendation_candidates(
     intent_tokens = recommendation_tokens(" ".join(intent_search_terms(intent)))
     memory_tokens = recommendation_tokens(memory_context)[:25] if memory_context else []
     area_terms = list_from_intent(intent, "area_terms")
-    food_terms = list_from_intent(intent, "food_terms")
+    food_terms = requested_food_terms(intent)
     search_pool = filter_restaurants_by_area(restaurants, area_terms)
     include_area_score = not area_terms
+    pizza_request = requests_pizza(" ".join(food_terms))
     if area_terms:
         tokens = remove_area_tokens(tokens, area_terms)
         intent_tokens = remove_area_tokens(intent_tokens, area_terms)
     for restaurant in search_pool:
+        # Filter before applying the candidate limit so generic Italian shops cannot
+        # crowd out a shop with an actual pizza record.
+        if pizza_request and not restaurant_has_recorded_pizza(restaurant):
+            continue
         score = score_restaurant_for_request(restaurant, tokens, budget, include_area=include_area_score)
         if area_terms and not food_terms:
             score += 1
@@ -1310,7 +1674,9 @@ def recommendation_tokens(request: str) -> list[str]:
     return tokens
 
 
-def infer_recommendation_intent(request: str, memory_context: str = "") -> dict[str, object]:
+def infer_recommendation_intent(
+    request: str, memory_context: str = "", *, previous_exchange: dict[str, object] | None = None,
+) -> dict[str, object]:
     """Turn a natural sentence into DB search intent before candidate lookup."""
 
     known = recommendation_known_values()
@@ -1339,6 +1705,7 @@ def infer_recommendation_intent(request: str, memory_context: str = "") -> dict[
                         "例：'今天傍晚會去秋葉原 有推薦的餐廳嗎' => area_terms 秋葉原, scene_terms 晚餐、傍晚。"
                         "area_terms 只能放地名/站名，不可以放完整句子或「的餐廳嗎」這種語尾。"
                         "只能產生搜尋詞，不要推薦不存在的店。"
+                        + PREVIOUS_EXCHANGE_INSTRUCTION
                     ),
                 },
                 {
@@ -1347,6 +1714,7 @@ def infer_recommendation_intent(request: str, memory_context: str = "") -> dict[
                         {
                             "request": request,
                             "chat_memory": memory_context[:1200],
+                            "previous_exchange": previous_exchange,
                             "known_db_values": known,
                             "fallback_hint": fallback,
                         },
@@ -1360,7 +1728,15 @@ def infer_recommendation_intent(request: str, memory_context: str = "") -> dict[
             timeout=20,
         )
         data = json.loads(response.choices[0].message.content or "{}")
-        return sanitize_recommendation_intent(merge_recommendation_intents(fallback, data))
+        intent = sanitize_recommendation_intent(merge_recommendation_intents(fallback, data))
+        if previous_exchange is not None:
+            explicit = sanitize_recommendation_intent(fallback)
+            for key in ("area_terms", "food_terms", "scene_terms"):
+                if list_from_intent(explicit, key):
+                    intent[key] = explicit[key]
+            if isinstance(explicit.get("budget"), int):
+                intent["budget"] = explicit["budget"]
+        return intent
     except Exception:
         print("recommendation intent inference failed; using local search terms")
         return sanitize_recommendation_intent(fallback)
@@ -1416,11 +1792,16 @@ def sanitize_recommendation_intent(intent: dict[str, object]) -> dict[str, objec
             if normalized in normalized_known:
                 area_terms.append(normalized_known[normalized])
                 continue
+            # Canonical station names remain meaningful even with no saved shops there.
+            if normalize_area(value + "的餐廳") == value:
+                area_terms.append(value)
+                continue
             for known_normalized, known_label in normalized_known.items():
                 if normalized in known_normalized or known_normalized in normalized:
                     area_terms.append(known_label)
                     break
     cleaned["area_terms"] = unique_texts(area_terms)
+    cleaned["food_terms"] = requested_food_terms(cleaned)
     return cleaned
 
 
@@ -1433,6 +1814,7 @@ def rule_based_recommendation_intent(request: str) -> dict[str, object]:
     food_terms: list[str] = []
     scene_terms: list[str] = []
     expanded_terms: list[str] = []
+    food_terms.extend(food_words_in_text(request))
 
     known = recommendation_known_values()
     for area in known["areas"]:
@@ -1465,12 +1847,39 @@ def rule_based_recommendation_intent(request: str) -> dict[str, object]:
     if any(word in request for word in ["一個人", "自己", "ひとり", "單人"]):
         scene_terms.extend(["一個人", "吧台", "快速"])
 
+    # Prefer a recognized dish so an unspaced Chinese sentence stops at its noun.
+    food_pattern = "|".join(re.escape(food) for food in sorted(food_words_in_text(request), key=len, reverse=True))
+    noun = (food_pattern + "|" if food_pattern else "") + r"[^\s，,。！？!?]+"
+    exclude_terms = re.findall(
+        rf"(?:不要|不吃|排除|避開|不想吃|without\s+)({noun})", request, re.I,
+    )
+    # Japanese puts the excluded noun BEFORE the marker (e.g. ラーメン以外).
+    japanese_noun = r"[^\s，,。！？!?、のはがをでに]+"
+    for marker in re.finditer(r"(?:は|が|を)?(?:なし|以外|抜き)", request, re.I):
+        preceding = request[:marker.start()]
+        # Search the food suffix first so a spaceless area cannot become an exclusion.
+        excluded = re.search(rf"({food_pattern})$", preceding, re.I) if food_pattern else None
+        excluded_noun = excluded.group(1) if excluded is not None else ""
+        if excluded is None:
+            excluded = re.search(rf"({japanese_noun})$", preceding, re.I)
+            if excluded is not None:
+                excluded_noun = excluded.group(1)
+                # Generic dishes can also follow an area without a space (池袋餃子以外).
+                for area in sorted(unique_texts([
+                    *area_terms, *(normalize_area(area) or "" for area in area_terms),
+                ]), key=len, reverse=True):
+                    if excluded_noun.startswith(area):
+                        excluded_noun = excluded_noun[len(area):]
+                        break
+        if excluded_noun:
+            exclude_terms.append(excluded_noun)
+    food_terms = requested_food_terms({"food_terms": food_terms, "exclude_terms": exclude_terms})
     return {
         "summary": request,
         "area_terms": unique_texts(area_terms),
         "food_terms": unique_texts(food_terms),
         "scene_terms": unique_texts(scene_terms),
-        "exclude_terms": [],
+        "exclude_terms": exclude_terms,
         "budget": parse_first_int(request),
         "expanded_terms": unique_texts([*terms, *expanded_terms]),
     }
@@ -1514,6 +1923,18 @@ def list_from_intent(intent: dict[str, object], key: str) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def requested_food_terms(intent: dict[str, object]) -> list[str]:
+    """Positive cuisine constraints only, including when an inherited/AI term conflicts."""
+    excluded = list_from_intent(intent, "exclude_terms")
+    excluded_foods = [*excluded, *food_words_in_text(" ".join(excluded))] if excluded else []
+    excluded_aliases = {
+        normalize_search_text(alias) for food in excluded_foods
+        for alias in [food, *recommendation_synonyms(food)]
+    }
+    return [food for food in list_from_intent(intent, "food_terms")
+            if normalize_search_text(food) not in excluded_aliases]
+
+
 def recommendation_budget(intent: dict[str, object], request: str) -> int | None:
     """Pick parsed AI budget first, then fallback to first number in text."""
 
@@ -1553,10 +1974,35 @@ def known_recommendation_terms() -> list[str]:
     return terms
 
 
+PIZZA_TERMS = ("披薩", "披萨", "比薩", "比萨", "pizza", "ピザ", "ピッツァ")
+ITALIAN_TERMS = ("義式", "意式", "義大利", "義大利料理", "意大利", "意大利料理",
+                 "義大利麵", "意大利面", "italian", "イタリアン", "イタリア料理", "パスタ", "pasta")
+FOOD_SEEDS = ("豬排", "猪排", "拉麵", "拉面", "沾麵", "沾面", "燒肉", "烧肉",
+              "壽司", "寿司", "咖哩", "咖喱", "居酒屋", "咖啡", "カフェ",
+              *PIZZA_TERMS, *ITALIAN_TERMS)
+
+
+def food_words_in_text(text: str) -> list[str]:
+    """Recognize cuisines without needing a saved shop or an API response."""
+    normalized = normalize_search_text(text)
+    words = [*FOOD_SEEDS, *recommendation_known_values()["categories"]]
+    for seed in FOOD_SEEDS:
+        # Pizza's Italian expansion is for alternatives, not a literal pizza match.
+        if seed not in (*PIZZA_TERMS, *ITALIAN_TERMS):
+            words.extend(recommendation_synonyms(normalize_search_text(seed)))
+    return unique_texts(word for word in words if normalize_search_text(word) in normalized)
+
+
+def looks_like_food_preference(text: str) -> bool:
+    return bool(food_words_in_text(text))
+
+
 def recommendation_synonyms(token: str) -> list[str]:
     """Map common Chinese/Taiwanese food words to Japanese DB keywords."""
 
+    token = normalize_search_text(token)
     groups = [
+        ("披薩", [*PIZZA_TERMS, *ITALIAN_TERMS]),
         ("豬排", ["とんかつ", "かつ", "カツ", "炸豬排"]),
         ("猪排", ["とんかつ", "かつ", "カツ", "炸猪排"]),
         ("拉麵", ["ラーメン", "らーめん", "ramen"]),
@@ -1585,6 +2031,7 @@ def recommendation_synonyms_for_text(normalized_text: str) -> list[str]:
 
     aliases: list[str] = []
     seed_words = [
+        *PIZZA_TERMS, *ITALIAN_TERMS,
         "豬排",
         "猪排",
         "拉麵",
@@ -1670,9 +2117,11 @@ def rank_recommendations_with_ai(
     candidates: list[Restaurant],
     memory_context: str = "",
     intent: dict[str, object] | None = None,
+    *, previous_exchange: dict[str, object] | None = None,
 ) -> list[tuple[Restaurant, str]]:
     """Ask AI to rank only the provided candidates, with a local fallback."""
 
+    japanese = (intent or {}).get("response_japanese", recommendation_is_japanese(request))
     candidate_by_id = {restaurant.id: restaurant for restaurant in candidates}
     payload = [
         {
@@ -1712,6 +2161,7 @@ def rank_recommendations_with_ai(
                         "依 response_language 寫簡短自然的理由，每間一至兩句，避免空泛稱讚。"
                         "回覆 JSON：{\"recommendations\":[{\"id\":數字,\"reason\":\"理由\"}]}，最多 3 間。"
                         "程式會為模糊需求補一句追問，你只要先給推薦。"
+                        + PREVIOUS_EXCHANGE_INSTRUCTION
                     ),
                 },
                 {
@@ -1719,9 +2169,10 @@ def rank_recommendations_with_ai(
                     "content": json.dumps(
                         {
                             "request": request,
-                            "response_language": "日本語" if recommendation_is_japanese(request) else "繁體中文",
+                            "response_language": "日本語" if japanese else "繁體中文",
                             "interpreted_intent": intent or {},
                             "chat_memory": memory_context[:2000],
+                            "previous_exchange": previous_exchange,
                             "candidates": payload,
                         },
                         ensure_ascii=False,
@@ -1748,7 +2199,7 @@ def rank_recommendations_with_ai(
                 continue
             seen.add(restaurant.id)
             reason = clean_recommendation_reason(
-                item.get("reason"), restaurant, japanese=recommendation_is_japanese(request)
+                item.get("reason"), restaurant, japanese=japanese
             )
             ranked.append((restaurant, reason))
         if ranked:
@@ -1757,7 +2208,7 @@ def rank_recommendations_with_ai(
         print("recommendation AI ranking failed; using local suggestions")
 
     return [
-        (restaurant, fallback_recommendation_reason(restaurant, japanese=recommendation_is_japanese(request)))
+        (restaurant, fallback_recommendation_reason(restaurant, japanese=japanese))
         for restaurant in candidates[:3]
     ]
 
@@ -1958,7 +2409,11 @@ async def send_search_results(
 
     restaurants = db.search(keyword)
     if not restaurants:
-        await target.reply(f"目前沒有找到「{keyword}」。", mention_author=False)
+        if looks_like_food_preference(keyword):
+            await send_recommendations(target, keyword)
+            return
+        await target.reply(f"目前沒有找到「{keyword}」。", mention_author=False,
+                           allowed_mentions=discord.AllowedMentions.none())
         return
 
     areas = unique_areas(restaurants)
@@ -1967,6 +2422,7 @@ async def send_search_results(
             f"找到 {len(restaurants)} 筆「{keyword}」相關餐廳，請先選擇地區：",
             view=AreaSelectView(keyword, restaurants),
             mention_author=False,
+            allowed_mentions=discord.AllowedMentions.none(),
         )
         return
 
@@ -1976,6 +2432,7 @@ async def send_search_results(
         embed=view.current_embed(),
         view=view,
         mention_author=False,
+        allowed_mentions=discord.AllowedMentions.none(),
     )
 
 
